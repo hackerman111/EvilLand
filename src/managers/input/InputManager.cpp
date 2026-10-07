@@ -669,8 +669,9 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus, bool mouse, st
         }
 
         if (FOLLOWMOUSE != 1 && !refocus) {
-            if (pFoundWindow != Desktop::focusState()->window() && Desktop::focusState()->window() &&
-                ((pFoundWindow->isFloating() && *PFLOATBEHAVIOR == 2) || (Desktop::focusState()->window()->isFloating() != pFoundWindow->isFloating() && *PFLOATBEHAVIOR != 0))) {
+            if (pFoundWindow != Desktop::focusState()->inputWindow() && Desktop::focusState()->inputWindow() &&
+                ((pFoundWindow->isFloating() && *PFLOATBEHAVIOR == 2) ||
+                 (Desktop::focusState()->inputWindow()->isFloating() != pFoundWindow->isFloating() && *PFLOATBEHAVIOR != 0))) {
                 // enter if change floating style
                 if (FOLLOWMOUSE != 3 && allowKeyboardRefocus)
                     Desktop::focusState()->rawWindowFocus(pFoundWindow, FOCUS_REASON, foundSurface);
@@ -678,10 +679,10 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus, bool mouse, st
             } else if (FOLLOWMOUSE == 2 || FOLLOWMOUSE == 3)
                 g_pSeatManager->setPointerFocus(foundSurface, surfaceLocal);
 
-            if (pFoundWindow == Desktop::focusState()->window())
+            if (pFoundWindow == Desktop::focusState()->inputWindow())
                 g_pSeatManager->setPointerFocus(foundSurface, surfaceLocal);
 
-            if (FOLLOWMOUSE != 0 || pFoundWindow == Desktop::focusState()->window())
+            if (FOLLOWMOUSE != 0 || pFoundWindow == Desktop::focusState()->inputWindow())
                 g_pSeatManager->setPointerFocus(foundSurface, surfaceLocal);
 
             if (g_pSeatManager->m_state.pointerFocus == foundSurface)
@@ -693,13 +694,13 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus, bool mouse, st
             auto lastFocus = m_lastMouseFocus.lock();
 
             if (allowKeyboardRefocus && ((FOLLOWMOUSE != 3 && (*PMOUSEREFOCUS || lastFocus != pFoundWindow)) || refocus)) {
-                if (lastFocus != pFoundWindow || Desktop::focusState()->window() != pFoundWindow || Desktop::focusState()->surface() != foundSurface || refocus) {
+                if (lastFocus != pFoundWindow || Desktop::focusState()->inputWindow() != pFoundWindow || Desktop::focusState()->surface() != foundSurface || refocus) {
 
                     m_lastMouseFocus = pFoundWindow;
 
                     // TODO: this looks wrong. When over a popup, it constantly is switching.
                     // Temp fix until that's figured out. Otherwise spams windowrule lookups and other shit.
-                    if (m_lastMouseFocus.lock() != pFoundWindow || Desktop::focusState()->window() != pFoundWindow) {
+                    if (m_lastMouseFocus.lock() != pFoundWindow || Desktop::focusState()->inputWindow() != pFoundWindow) {
                         if (m_mousePosDelta > *PFOLLOWMOUSETHRESHOLD || refocus) {
                             const bool hasNoFollowMouse = pFoundWindow && pFoundWindow->m_ruleApplicator->noFollowMouse().valueOrDefault();
 

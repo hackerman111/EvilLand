@@ -262,6 +262,10 @@ static void parseRequest(SWlState& state, std::string req) {
         state.surf->sendCommit();
         wl_display_roundtrip(state.display);
         clientLog("unmapped");
+    } else if (req.starts_with("title ")) {
+        state.xdgToplevel->sendSetTitle(req.substr(6, req.find('\n') - 6).c_str());
+        wl_display_roundtrip(state.display);
+        clientLog("titled");
     } else if (req.starts_with("exit"))
         shouldExit = true;
 }

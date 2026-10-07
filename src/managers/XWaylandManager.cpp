@@ -63,7 +63,7 @@ void CHyprXWaylandManager::activateWindow(PHLWINDOW pWindow, bool activate) {
         Desktop::focusState()->window()  = pWindow;
     }
 
-    if (!(pWindow->m_state & Desktop::View::WINDOW_STATE_PINNED))
+    if (!(pWindow->m_state & Desktop::View::WINDOW_STATE_PINNED) && Desktop::focusState()->window() == pWindow)
         pWindow->m_workspace->rememberFocusedWindow(pWindow);
 }
 

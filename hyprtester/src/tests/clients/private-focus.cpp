@@ -11,6 +11,8 @@
 #include <sstream>
 #include <stdexcept>
 #include <sys/poll.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 #include <thread>
 
@@ -86,6 +88,12 @@ class CFocusClient {
             throw std::runtime_error("focus client unmap failed");
     }
 
+    void setTitle(const std::string& title) {
+        const auto COMMAND = "title " + title + "\n";
+        if (write(m_input.get(), COMMAND.data(), COMMAND.size()) != static_cast<ssize_t>(COMMAND.size()) || receive() != "titled\n")
+            throw std::runtime_error("focus client title update failed");
+    }
+
     SFocusStats stats() {
         if (write(m_input.get(), "stats\n", 6) != 6)
             throw std::runtime_error("focus query failed");
@@ -115,6 +123,162 @@ class CFocusClient {
 static void sendFocusTestKey(uint32_t key, bool pressed) {
     if (getFromSocket(std::format("/eval hl.plugin.test.keybind({}, 0, {})", pressed ? 1 : 0, key)) != "ok")
         throw std::runtime_error("focus test key failed");
+}
+
+class CFocusEvents {
+  public:
+    CFocusEvents() : m_socket(socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0)) {
+        const auto  RUNTIME = getenv("XDG_RUNTIME_DIR");
+        const auto  PATH    = std::format("{}/hypr/{}/.socket2.sock", RUNTIME ? RUNTIME : std::format("/run/user/{}", getuid()), HIS);
+        sockaddr_un address{};
+        address.sun_family = AF_UNIX;
+        if (PATH.size() >= sizeof(address.sun_path))
+            throw std::runtime_error("focus event socket path too long");
+
+        std::ranges::copy(PATH, address.sun_path);
+        if (connect(m_socket.get(), reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0)
+            throw std::runtime_error("focus event socket connection failed");
+    }
+
+    std::string receive() {
+        std::string            events;
+        std::array<char, 4096> buffer{};
+        pollfd                 fd{.fd = m_socket.get(), .events = POLLIN};
+        while (poll(&fd, 1, 100) == 1) {
+            const auto COUNT = read(fd.fd, buffer.data(), buffer.size());
+            if (COUNT <= 0)
+                throw std::runtime_error("focus event socket disconnected");
+
+            events.append(buffer.data(), COUNT);
+        }
+        return events;
+    }
+
+  private:
+    Hyprutils::OS::CFileDescriptor m_socket;
+};
+
+TEST_CASE(captureHiddenFocusPreservesActiveWindow) {
+    CFocusClient browser("public-browser"), hidden("public-private"), other("public-other");
+    hidden.setProp("hide_from_screen_share", true);
+    browser.focus();
+    const auto   HISTORY = browser.attribute("focusHistoryID");
+    CFocusEvents events;
+    hidden.focus();
+    EXPECT(browser.activeWindow(), true);
+    EXPECT(browser.attribute("focusHistoryID"), HISTORY);
+    EXPECT(hidden.stats().focused, true);
+    EXPECT(browser.stats().focused, false);
+    sendFocusTestKey(38, true);
+    sendFocusTestKey(38, false);
+    EXPECT(hidden.stats().presses, 1U);
+    EXPECT(events.receive().contains("activewindow"), false);
+    hidden.setTitle("private title");
+    EXPECT(browser.attribute("title"), std::string("keyboard-modifiers test client"));
+    EXPECT(events.receive().contains("activewindow"), false);
+    browser.setTitle("public title");
+    EXPECT(browser.attribute("title"), std::string("public title"));
+    EXPECT_CONTAINS(events.receive(), "activewindow>>public-browser,public title");
+    browser.focus();
+    EXPECT(browser.activeWindow(), true);
+    EXPECT(events.receive().contains("activewindow"), false);
+    other.focus();
+    EXPECT(other.activeWindow(), true);
+    EXPECT_CONTAINS(events.receive(), "activewindow>>public-other,");
+}
+
+TEST_CASE(captureHiddenFocusSurvivesPrivateChainAndUnmap) {
+    CFocusClient browser("public-browser"), first("public-first"), second("public-second");
+    first.setProp("hide_from_screen_share", true);
+    second.setProp("hide_from_screen_share", true);
+    browser.focus();
+    CFocusEvents events;
+    first.focus();
+    second.focus();
+    EXPECT(browser.activeWindow(), true);
+    EXPECT(second.stats().focused, true);
+    second.unmap();
+    EXPECT(browser.activeWindow(), true);
+    EXPECT(browser.stats().focused, true);
+    EXPECT(events.receive().contains("activewindow"), false);
+}
+
+TEST_CASE(captureHiddenFocusReleasedWhenDisabled) {
+    CFocusClient browser("public-browser"), hidden("public-private");
+    hidden.setProp("hide_from_screen_share", true);
+    browser.focus();
+    hidden.focus();
+    CFocusEvents events;
+    hidden.setProp("hide_from_screen_share", false);
+    EXPECT(hidden.activeWindow(), true);
+    EXPECT_CONTAINS(events.receive(), "activewindow>>public-private,");
+}
+
+TEST_CASE(captureHiddenFocusReleasesAfterOriginalCloses) {
+    CFocusClient browser("public-browser"), hidden("public-private"), other("public-other");
+    hidden.setProp("hide_from_screen_share", true);
+    browser.focus();
+    hidden.focus();
+    OK(getFromSocket(std::format("/dispatch hl.dsp.window.close({{ window = '{}' }})", browser.selector())));
+    Tests::waitUntilWindowsN(2);
+    other.focus();
+    EXPECT(other.activeWindow(), true);
+    EXPECT(other.stats().focused, true);
+}
+
+TEST_CASE(captureHiddenFocusKeepsActiveWindowOnKeyboardLeave) {
+    CFocusClient browser("public-browser"), hidden("public-private");
+    hidden.setProp("hide_from_screen_share", true);
+    browser.focus();
+    hidden.focus();
+    CFocusEvents events;
+    OK(getFromSocket("/eval hl.plugin.test.nullfocus()"));
+    EXPECT(browser.activeWindow(), true);
+    EXPECT(hidden.stats().focused, false);
+    EXPECT(events.receive().contains("activewindow"), false);
+}
+
+TEST_CASE(captureHiddenFocusReleasedOnEmptyWorkspace) {
+    CFocusClient browser("public-browser"), hidden("public-private");
+    hidden.setProp("hide_from_screen_share", true);
+    browser.focus();
+    hidden.focus();
+    CFocusEvents events;
+    OK(getFromSocket("/dispatch hl.dsp.focus({ workspace = '3' })"));
+    EXPECT(browser.activeWindow() || hidden.activeWindow(), false);
+    EXPECT(hidden.stats().focused, false);
+    EXPECT_CONTAINS(events.receive(), "activewindow>>,\n");
+}
+
+TEST_CASE(captureHiddenFocusReturnsInputOnOriginalClick) {
+    CFocusClient browser("public-browser"), hidden("public-private");
+    OK(getFromSocket("/eval hl.config({ input = { follow_mouse = 0 } })"));
+    browser.focus();
+    OK(getFromSocket("/dispatch hl.dsp.window.fullscreen({ mode = 'fullscreen', action = 'set' })"));
+    hidden.floating();
+    OK(getFromSocket(std::format("/dispatch hl.dsp.window.move({{ window = '{}', x = 200, y = 200 }})", hidden.selector())));
+    hidden.setProp("hide_from_screen_share", true);
+    hidden.focus();
+    CFocusEvents events;
+    EXPECT(hidden.stats().focused, true);
+    OK(getFromSocket("/dispatch hl.dsp.cursor.move({ x = 10, y = 10 })"));
+    OK(getFromSocket("/eval hl.plugin.test.click(272, 1)"));
+    OK(getFromSocket("/eval hl.plugin.test.click(272, 0)"));
+    EXPECT(browser.activeWindow(), true);
+    EXPECT(browser.stats().focused, true);
+    EXPECT(hidden.stats().focused, false);
+    EXPECT(events.receive().contains("activewindow"), false);
+}
+
+TEST_CASE(captureHiddenFocusUsesNormalFocusAcrossWorkspaces) {
+    CFocusClient browser("public-browser"), hidden("public-private");
+    hidden.setProp("hide_from_screen_share", true);
+    hidden.moveToWorkspace("2");
+    browser.focus();
+    hidden.focus();
+    EXPECT(hidden.activeWindow(), true);
+    EXPECT(hidden.stats().focused, true);
+    EXPECT(browser.stats().focused, false);
 }
 
 TEST_CASE(privateWindowPreservesPreviousFocus) {

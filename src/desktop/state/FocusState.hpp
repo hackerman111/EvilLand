@@ -64,9 +64,12 @@ namespace Desktop {
       private:
         void                   updatePreservedFocus(PHLWINDOW nextWindow);
         void                   refreshFocusGuard();
+        void                   refreshScreenShareFocus();
+        void                   publishWindowFocus(eFocusReason reason);
         bool                   allowsGuardedFocus(PHLWINDOW nextWindow);
 
         PHLWINDOWREF           m_guardWindow;
+        PHLWINDOWREF           m_screenShareFocusWindow;
         PHLWINDOWREF           m_preservedFocusWindow;
         WP<CWLSurfaceResource> m_preservedFocusSurface;
         WP<CWLSurfaceResource> m_focusSurface;

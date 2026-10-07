@@ -27,6 +27,9 @@ SP<CFocusState> Desktop::focusState() {
 
 Desktop::CFocusState::CFocusState() {
     m_windowClose = Event::bus()->m_events.window.close.listen([this](const auto& window) {
+        if (window == m_screenShareFocusWindow)
+            m_screenShareFocusWindow.reset();
+
         if (window == m_guardWindow) {
             m_guardWindow.reset();
             if (window == m_preservedFocusWindow) {
@@ -38,6 +41,8 @@ Desktop::CFocusState::CFocusState() {
 
         if (const auto GUARD = guardedWindow(); GUARD && window == m_focusWindow)
             fullWindowFocus(GUARD, FOCUS_REASON_OTHER);
+        else if (const auto PUBLIC = m_screenShareFocusWindow.lock(); PUBLIC && window == m_focusWindow)
+            fullWindowFocus(PUBLIC, FOCUS_REASON_OTHER);
     });
 }
 
@@ -90,6 +95,7 @@ void CFocusState::releasePreservedFocus(PHLWINDOW nextWindow) {
 
 void CFocusState::refreshPreservedFocus() {
     refreshFocusGuard();
+    refreshScreenShareFocus();
 
     if (const auto GUARD = guardedWindow(); GUARD && !allowsGuardedFocus(m_focusWindow.lock())) {
         fullWindowFocus(GUARD, FOCUS_REASON_OTHER);
@@ -101,6 +107,35 @@ void CFocusState::refreshPreservedFocus() {
 
     releasePreservedFocus();
     g_pSeatManager->setKeyboardFocus(g_pSeatManager->m_state.keyboardFocus.lock());
+}
+
+void CFocusState::publishWindowFocus(eFocusReason reason) {
+    const auto PUBLIC = window();
+    IPC::Socket2::sock()->postEvent({.event = "activewindow", .data = PUBLIC ? std::format("{},{}", PUBLIC->metadata().appID(), PUBLIC->metadata().title()) : ","});
+    IPC::Socket2::sock()->postEvent({.event = "activewindowv2", .data = PUBLIC ? std::format("{:x}", rc<uintptr_t>(PUBLIC.get())) : ""});
+    Event::bus()->m_events.window.active.emit(PUBLIC, reason);
+}
+
+void CFocusState::refreshScreenShareFocus() {
+    const auto PUBLIC = m_screenShareFocusWindow.lock();
+    const auto INPUT  = m_focusWindow.lock();
+    if (!PUBLIC)
+        return;
+
+    if (validMapped(PUBLIC) && !PUBLIC->isHidden() && PUBLIC->m_workspace && PUBLIC->m_workspace->visible() && validMapped(INPUT) &&
+        INPUT->m_ruleApplicator->hideFromScreenShare().valueOrDefault() && INPUT->m_workspace == PUBLIC->m_workspace && INPUT->m_monitor == PUBLIC->m_monitor &&
+        !g_pSessionLockManager->isSessionLocked())
+        return;
+
+    m_screenShareFocusWindow.reset();
+    for (const auto& w : {PUBLIC, INPUT}) {
+        if (!validMapped(w))
+            continue;
+
+        w->m_ruleApplicator->propertiesChanged(Rule::RULE_PROP_FOCUS);
+        w->presentation().refreshValues();
+    }
+    publishWindowFocus(FOCUS_REASON_OTHER);
 }
 
 PHLWINDOW CFocusState::guardedWindow() const {
@@ -259,7 +294,9 @@ void CFocusState::rawWindowFocus(PHLWINDOW pWindow, eFocusReason reason, SP<CWLS
             return;
 
         const auto PLASTWINDOW = m_focusWindow.lock();
+        const auto PUBLIC      = window();
         releasePreservedFocus();
+        m_screenShareFocusWindow.reset();
         m_focusWindow.reset();
 
         if (PLASTWINDOW && PLASTWINDOW->mapped()) {
@@ -267,6 +304,11 @@ void CFocusState::rawWindowFocus(PHLWINDOW pWindow, eFocusReason reason, SP<CWLS
             PLASTWINDOW->presentation().refreshValues();
 
             g_pXWaylandManager->activateWindow(PLASTWINDOW, false);
+        }
+
+        if (validMapped(PUBLIC) && PUBLIC != PLASTWINDOW) {
+            PUBLIC->m_ruleApplicator->propertiesChanged(Rule::RULE_PROP_FOCUS);
+            PUBLIC->presentation().refreshValues();
         }
 
         g_pSeatManager->setKeyboardFocus(nullptr);
@@ -314,8 +356,15 @@ void CFocusState::rawWindowFocus(PHLWINDOW pWindow, eFocusReason reason, SP<CWLS
     updatePreservedFocus(pWindow);
 
     const auto PLASTWINDOW = m_focusWindow.lock();
-    m_focusWindow          = pWindow;
-    if (!guardedWindow())
+    if (!guardedWindow() && pWindow != PREVIOUS_PUBLIC_WINDOW && pWindow->m_ruleApplicator->hideFromScreenShare().valueOrDefault() && validMapped(PREVIOUS_PUBLIC_WINDOW) &&
+        !PREVIOUS_PUBLIC_WINDOW->isHidden() && !PREVIOUS_PUBLIC_WINDOW->m_ruleApplicator->hideFromScreenShare().valueOrDefault() &&
+        PREVIOUS_PUBLIC_WINDOW->m_workspace == pWindow->m_workspace && PREVIOUS_PUBLIC_WINDOW->m_monitor == pWindow->m_monitor)
+        m_screenShareFocusWindow = PREVIOUS_PUBLIC_WINDOW;
+    else
+        m_screenShareFocusWindow.reset();
+
+    m_focusWindow = pWindow;
+    if (!guardedWindow() && !m_screenShareFocusWindow)
         pWindow->m_workspace->rememberFocusedWindow(pWindow);
 
     /* If special fallthrough is enabled, this behavior will be disabled, as I have no better idea of nicely tracking which
@@ -333,6 +382,11 @@ void CFocusState::rawWindowFocus(PHLWINDOW pWindow, eFocusReason reason, SP<CWLS
             g_pXWaylandManager->activateWindow(PLASTWINDOW, false);
     }
 
+    if (validMapped(PREVIOUS_PUBLIC_WINDOW) && PREVIOUS_PUBLIC_WINDOW != PLASTWINDOW && PREVIOUS_PUBLIC_WINDOW != window()) {
+        PREVIOUS_PUBLIC_WINDOW->m_ruleApplicator->propertiesChanged(Rule::RULE_PROP_FOCUS);
+        PREVIOUS_PUBLIC_WINDOW->presentation().refreshValues();
+    }
+
     const auto PWINDOWSURFACE = surface ? surface : pWindow->wlSurface()->resource();
     rawSurfaceFocus(PWINDOWSURFACE, pWindow);
 
@@ -347,11 +401,8 @@ void CFocusState::rawWindowFocus(PHLWINDOW pWindow, eFocusReason reason, SP<CWLS
 
     refreshFocusGuard();
     const auto PUBLIC_WINDOW = window();
-    if (!guardedWindow() || PUBLIC_WINDOW != PREVIOUS_PUBLIC_WINDOW) {
-        IPC::Socket2::sock()->postEvent({.event = "activewindow", .data = std::format("{},{}", PUBLIC_WINDOW->metadata().appID(), PUBLIC_WINDOW->metadata().title())});
-        IPC::Socket2::sock()->postEvent({.event = "activewindowv2", .data = std::format("{:x}", rc<uintptr_t>(PUBLIC_WINDOW.get()))});
-        Event::bus()->m_events.window.active.emit(PUBLIC_WINDOW, reason);
-    }
+    if ((!guardedWindow() && !m_screenShareFocusWindow && PLASTWINDOW == PREVIOUS_PUBLIC_WINDOW) || PUBLIC_WINDOW != PREVIOUS_PUBLIC_WINDOW)
+        publishWindowFocus(reason);
 
     g_pInputManager->recheckIdleInhibitorStatus();
 
@@ -466,6 +517,9 @@ PHLWINDOW CFocusState::window() {
     if (const auto GUARD = guardedWindow())
         return GUARD;
 
+    if (const auto PUBLIC = m_screenShareFocusWindow.lock(); validMapped(PUBLIC))
+        return PUBLIC;
+
     return m_focusWindow.lock();
 }
 
@@ -479,11 +533,15 @@ void CFocusState::resetWindowFocus() {
 
     m_focusWindow.reset();
     m_focusSurface.reset();
+    m_screenShareFocusWindow.reset();
 }
 
 bool CFocusState::isWindowActive(PHLWINDOW pWindow) const {
     if (const auto GUARD = guardedWindow())
         return pWindow == GUARD;
+
+    if (const auto PUBLIC = m_screenShareFocusWindow.lock(); validMapped(PUBLIC))
+        return pWindow == PUBLIC;
 
     const auto FOCUSWINDOW  = m_focusWindow.lock();
     const auto FOCUSSURFACE = m_focusSurface.lock();
