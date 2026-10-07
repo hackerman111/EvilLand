@@ -1,4 +1,6 @@
 #include "Fadeout.hpp"
+#include "../view/window/Window.hpp"
+#include "../view/LayerSurface.hpp"
 
 using namespace Desktop;
 using namespace Desktop::View;
@@ -13,6 +15,11 @@ PHLWORKSPACEREF IFadeout::workspace() const {
 
 SFadeoutRenderEffects IFadeout::effects() const {
     return m_effects;
+}
+
+bool IFadeout::hiddenFromScreenShare() const {
+    return m_hiddenFromScreenShare || (m_screenShareWindow && m_screenShareWindow->m_ruleApplicator->hideFromScreenShare().valueOrDefault()) ||
+        (m_screenShareLayer && m_screenShareLayer->m_ruleApplicator->hideFromScreenShare().valueOrDefault());
 }
 
 SFadeoutSource IFadeout::source() const {

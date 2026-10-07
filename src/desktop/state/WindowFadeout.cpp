@@ -57,13 +57,15 @@ SP<CWindowFadeout> CWindowFadeout::create(PHLWINDOW window, SP<Render::IFramebuf
     if (!MONITOR)
         return nullptr;
 
-    auto fadeout           = SP<CWindowFadeout>(new CWindowFadeout());
-    fadeout->m_monitor     = MONITOR;
-    fadeout->m_workspace   = window->m_workspace;
-    fadeout->m_framebuffer = snapshot;
-    fadeout->m_zIndex      = windowZIndex(window);
-    fadeout->m_sourcePos   = window->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT) - MONITOR->m_position;
-    fadeout->m_sourceSize  = window->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
+    auto fadeout                     = SP<CWindowFadeout>(new CWindowFadeout());
+    fadeout->m_monitor               = MONITOR;
+    fadeout->m_workspace             = window->m_workspace;
+    fadeout->m_framebuffer           = snapshot;
+    fadeout->m_hiddenFromScreenShare = window->m_ruleApplicator->hideFromScreenShare().valueOrDefault();
+    fadeout->m_screenShareWindow     = window;
+    fadeout->m_zIndex                = windowZIndex(window);
+    fadeout->m_sourcePos             = window->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT) - MONITOR->m_position;
+    fadeout->m_sourceSize            = window->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
     const bool OVERFULLSCREEN =
         window->isFloating() && window->shouldRenderOverFullscreen() && window->m_workspace && Fullscreen::controller()->hasFullscreen(window->m_workspace, true);
     fadeout->m_plane         = !window->isFloating() ? FADEOUT_PLANE_WINDOW_TILED : (OVERFULLSCREEN ? FADEOUT_PLANE_WINDOW_OVER_FULLSCREEN : FADEOUT_PLANE_WINDOW_FLOATING);

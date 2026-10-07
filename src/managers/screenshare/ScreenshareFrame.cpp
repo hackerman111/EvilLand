@@ -6,6 +6,9 @@
 #include "../../Compositor.hpp"
 #include "../../render/Renderer.hpp"
 #include "../../render/OpenGL.hpp"
+#include "../../render/SceneResources.hpp"
+#include "../../render/scene/MonitorScene.hpp"
+#include "../../desktop/state/FadingOutState.hpp"
 #include "../../output/Monitor.hpp"
 #include "../../state/MonitorState.hpp"
 #include "../../desktop/view/window/Window.hpp"
@@ -15,6 +18,10 @@
 #include "../../render/pass/RectPassElement.hpp"
 #include "helpers/cm/ColorManagement.hpp"
 #include "../../managers/fullscreen/FullscreenController.hpp"
+#include "../../config/ConfigValue.hpp"
+#include "../../notification/NotificationOverlay.hpp"
+#include "../../errorOverlay/Overlay.hpp"
+#include "../../debug/Overlay.hpp"
 #include <hyprutils/math/Region.hpp>
 #include <hyprgraphics/egl/Egl.hpp>
 
@@ -160,6 +167,12 @@ void CScreenshareFrame::copy() {
 
     // store a snapshot before the permission popup so we don't break screenshots
     const auto PERM = g_pDynamicPermissionManager->clientPermissionMode(m_session->m_client, PERMISSION_TYPE_SCREENCOPY);
+    if (PERM != PERMISSION_RULE_ALLOW_MODE_DENY && (PERM != PERMISSION_RULE_ALLOW_MODE_PENDING || !m_session->m_tempFB || !m_session->m_tempFB->isAllocated()) &&
+        !prepareMonitorFrame()) {
+        m_failed = true;
+        m_callback(RESULT_NOT_COPIED);
+        return;
+    }
     if (PERM == PERMISSION_RULE_ALLOW_MODE_PENDING) {
         if (!m_session->m_tempFB || !m_session->m_tempFB->isAllocated())
             storeTempFB();
@@ -181,13 +194,85 @@ void CScreenshareFrame::copy() {
         m_callback(RESULT_NOT_COPIED);
 }
 
+bool CScreenshareFrame::prepareMonitorFrame() {
+    m_useFilteredMonitor = false;
+    if (m_session->m_type != SHARE_MONITOR && m_session->m_type != SHARE_REGION)
+        return true;
+
+    const auto MONITOR = m_session->monitor();
+    m_sceneMonitor     = MONITOR;
+    if (MONITOR->isMirror())
+        m_sceneMonitor = MONITOR->m_mirrorOf;
+    const auto SOURCE = m_sceneMonitor.lock();
+    if (!SOURCE)
+        return false;
+
+    const bool HIDDEN_WINDOW  = std::ranges::any_of(Desktop::windowState()->windows(), [&](const auto& window) {
+        return window->mapped() && !window->isHidden() && window->m_ruleApplicator->hideFromScreenShare().valueOrDefault() && window->presentation().visibleOnMonitor(SOURCE);
+    });
+    const bool HIDDEN_LAYER   = std::ranges::any_of(Desktop::layerState()->layers(), [&](const auto& layer) {
+        return layer->m_monitor == SOURCE && layer->mapped() && layer->m_ruleApplicator->hideFromScreenShare().valueOrDefault();
+    });
+    const bool HIDDEN_FADEOUT = std::ranges::any_of(Desktop::fadingOutState()->fadeouts(),
+                                                    [&](const auto& fadeout) { return fadeout && fadeout->monitor() == SOURCE && fadeout->hiddenFromScreenShare(); });
+    if (!HIDDEN_WINDOW && !HIDDEN_LAYER && !HIDDEN_FADEOUT)
+        return true;
+
+    // Recompose the scene: the output texture has already lost the pixels behind
+    // an opaque private surface. Keep blur caches separate from the live output.
+    if (!m_session->m_filteredMonitorFB)
+        m_session->m_filteredMonitorFB = g_pHyprRenderer->createFB();
+    if (!m_session->m_filteredSceneResources)
+        m_session->m_filteredSceneResources = makeShared<Render::CSceneResources>(g_pHyprRenderer->createFB());
+
+    const auto SIZE   = SOURCE->m_transformedSize;
+    const auto FORMAT = SOURCE->useFP16() ? DRM_FORMAT_ABGR16161616F : DRM_FORMAT_ABGR8888;
+    if (!m_session->m_filteredMonitorFB->alloc(SIZE.x, SIZE.y, FORMAT))
+        return false;
+    m_session->m_filteredMonitorFB->setImageDescription(SOURCE->workBufferImageDescription());
+
+    CRegion damage{CBox{{}, SIZE}};
+    if (!g_pHyprRenderer->beginRender(SOURCE, damage, Render::RENDER_MODE_FULL_FAKE, {}, m_session->m_filteredMonitorFB, false,
+                                      {.sceneResources = m_session->m_filteredSceneResources}))
+        return false;
+
+    bool                      finishing = false;
+    const Render::CScopeGuard cleanup([&] {
+        if (!finishing)
+            g_pHyprRenderer->abortRender();
+    });
+    auto&                     ctx = g_pHyprRenderer->context();
+    ctx.m_renderingScreenShare    = true;
+    ctx.m_blockSurfaceFeedback    = true;
+    ctx.m_data.blockScreenShader  = true;
+    g_pHyprRenderer->draw(ctx, CClearPassElement::SClearData{Colors::BLACK}, damage);
+    Render::CMonitorScene scene(SOURCE);
+    scene.draw(ctx, ctx.effectTime());
+
+    if (SOURCE == Desktop::focusState()->monitor()) {
+        Notification::overlay()->draw(ctx, SOURCE);
+        ErrorOverlay::overlay()->draw(ctx);
+    }
+    static auto PDEBUGOVERLAY = CConfigValue<Config::INTEGER>("debug:overlay");
+    if (!State::monitorState()->monitors().empty() && SOURCE == State::monitorState()->monitors().front() && *PDEBUGOVERLAY == 1)
+        Debug::overlay()->draw(ctx);
+
+    if (SOURCE->m_dpmsBlackOpacity->value() != 0.F)
+        g_pHyprRenderer->draw(ctx, CRectPassElement::SRectData{.box = CBox{{}, SIZE}, .color = Colors::BLACK.modifyA(SOURCE->m_dpmsBlackOpacity->value())}, damage);
+
+    finishing = true;
+    g_pHyprRenderer->endRender();
+    m_useFilteredMonitor = true;
+    return true;
+}
+
 void CScreenshareFrame::renderMonitor(Render::CRenderContext& ctx) {
     if ((m_session->m_type != SHARE_MONITOR && m_session->m_type != SHARE_REGION) || done())
         return;
 
     const auto PMONITOR = m_session->monitor();
 
-    auto       TEXTURE = ctx.m_data.pMonitor->resources()->getMirrorTexture();
+    auto       TEXTURE = m_useFilteredMonitor ? m_session->m_filteredMonitorFB->getTexture() : PMONITOR->resources()->getMirrorTexture();
     if (!TEXTURE) {
         LOG(Log::ERR, "Invalid source texture");
         return;
@@ -210,7 +295,18 @@ void CScreenshareFrame::renderMonitor(Render::CRenderContext& ctx) {
     g_pHyprRenderer->setViewport(0, 0, m_bufferSize.x, m_bufferSize.y);
 
     // render monitor texture
-    CBox       monbox = CBox{{}, PMONITOR->m_transformedSize}.translate(-m_session->m_captureBox.pos());
+    CBox       monbox      = CBox{{}, PMONITOR->m_transformedSize}.translate(-m_session->m_captureBox.pos());
+    const auto SOURCE      = m_useFilteredMonitor ? m_sceneMonitor.lock() : PMONITOR;
+    double     mirrorScale = 1.0;
+    Vector2D   mirrorOffset;
+    if (m_useFilteredMonitor && PMONITOR->isMirror()) {
+        mirrorScale  = std::min(PMONITOR->m_transformedSize.x / SOURCE->m_transformedSize.x, PMONITOR->m_transformedSize.y / SOURCE->m_transformedSize.y);
+        mirrorOffset = (PMONITOR->m_transformedSize - SOURCE->m_transformedSize * mirrorScale) / 2.0;
+        monbox       = CBox{mirrorOffset, SOURCE->m_transformedSize * mirrorScale}.translate(-m_session->m_captureBox.pos());
+    }
+    const auto captureBoxFor = [&](CBox box) {
+        return box.translate(-SOURCE->m_position).scale(SOURCE->m_scale * mirrorScale).translate(mirrorOffset).translate(-m_session->m_captureBox.pos());
+    };
 
     const auto OLD                 = ctx.m_data.renderModif.enabled;
     ctx.m_data.renderModif.enabled = false;
@@ -233,8 +329,9 @@ void CScreenshareFrame::renderMonitor(Render::CRenderContext& ctx) {
             const auto popRel = popup->coordsRelativeToParent();
             popup->wlSurface()->resource()->breadthfirst(
                 [&](SP<CWLSurfaceResource> surf, const Vector2D& localOff, void*) {
-                    const auto size = surf->m_current.size;
-                    const auto surfBox =
+                    const auto size    = surf->m_current.size;
+                    const auto surfBox = m_useFilteredMonitor ?
+                        captureBoxFor(CBox{popupBaseOffset + popRel + localOff, size}) :
                         CBox{popupBaseOffset + popRel + localOff, size}.translate(PMONITOR->m_position).scale(PMONITOR->m_scale).translate(-m_session->m_captureBox.pos());
 
                     if LIKELY (surfBox.w > 0 && surfBox.h > 0)
@@ -245,19 +342,19 @@ void CScreenshareFrame::renderMonitor(Render::CRenderContext& ctx) {
     };
 
     for (auto const& l : Desktop::layerState()->layers()) {
+        if (l->m_ruleApplicator->hideFromScreenShare().valueOrDefault())
+            continue;
+
         if (!l->m_ruleApplicator->noScreenShare().valueOrDefault())
             continue;
 
-        if UNLIKELY (!l->mapped() || !l->acceptsInput() || !l->alphaNonZero())
+        if UNLIKELY (!l->mapped() || !l->acceptsInput() || (m_useFilteredMonitor ? g_pHyprRenderer->layerAlphaForScreenShare(l, SOURCE) <= 0.F : !l->alphaNonZero()))
             continue;
 
         const auto REALPOS  = l->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
         const auto REALSIZE = l->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
 
-        const auto noScreenShareBox = CBox{REALPOS.x, REALPOS.y, std::max(REALSIZE.x, 5.0), std::max(REALSIZE.y, 5.0)}
-                                          .translate(-PMONITOR->m_position)
-                                          .scale(PMONITOR->m_scale)
-                                          .translate(-m_session->m_captureBox.pos());
+        const auto noScreenShareBox = captureBoxFor(CBox{REALPOS.x, REALPOS.y, std::max(REALSIZE.x, 5.0), std::max(REALSIZE.y, 5.0)});
 
         g_pHyprRenderer->draw(ctx, CRectPassElement::SRectData{.box = noScreenShareBox, .color = Colors::BLACK}, noScreenShareBox);
 
@@ -268,10 +365,13 @@ void CScreenshareFrame::renderMonitor(Render::CRenderContext& ctx) {
     }
 
     for (auto const& w : Desktop::windowState()->windows()) {
+        if (w->m_ruleApplicator->hideFromScreenShare().valueOrDefault())
+            continue;
+
         if (!w->m_ruleApplicator->noScreenShare().valueOrDefault())
             continue;
 
-        if (!g_pHyprRenderer->shouldRenderWindow(w, PMONITOR))
+        if (m_useFilteredMonitor ? !g_pHyprRenderer->shouldRenderWindowForScreenShare(w, SOURCE) : !g_pHyprRenderer->shouldRenderWindow(w, PMONITOR))
             continue;
 
         if (w->isHidden())
@@ -285,14 +385,11 @@ void CScreenshareFrame::renderMonitor(Render::CRenderContext& ctx) {
         const auto renderOffset     = PWORKSPACE && !(w->m_state & WINDOW_STATE_PINNED) ? PWORKSPACE->m_renderOffset->value() : Vector2D{};
         const auto REALSIZE         = w->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
         const auto REALPOS          = w->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT) + renderOffset;
-        const auto noScreenShareBox = CBox{REALPOS.x, REALPOS.y, std::max(REALSIZE.x, 5.0), std::max(REALSIZE.y, 5.0)}
-                                          .translate(-PMONITOR->m_position)
-                                          .scale(PMONITOR->m_scale)
-                                          .translate(-m_session->m_captureBox.pos());
+        const auto noScreenShareBox = captureBoxFor(CBox{REALPOS.x, REALPOS.y, std::max(REALSIZE.x, 5.0), std::max(REALSIZE.y, 5.0)});
 
         // seems like rounding doesn't play well with how we manipulate the box position to render regions causing the window to leak through
         const auto dontRound     = m_session->m_captureBox.pos() != Vector2D() || Fullscreen::controller()->isFullscreen(w, Fullscreen::FSMODE_FULLSCREEN);
-        const auto rounding      = dontRound ? 0 : w->presentation().rounding() * PMONITOR->m_scale;
+        const auto rounding      = dontRound ? 0 : w->presentation().rounding() * SOURCE->m_scale * mirrorScale;
         const auto roundingPower = dontRound ? 2.0f : w->presentation().roundingPower();
 
         g_pHyprRenderer->draw(ctx,
@@ -373,7 +470,8 @@ void CScreenshareFrame::render(Render::CRenderContext& ctx) {
     if (PERM == PERMISSION_RULE_ALLOW_MODE_PENDING)
         return;
 
-    bool windowShareDenied = m_session->m_type == SHARE_WINDOW && m_session->m_window->m_ruleApplicator && m_session->m_window->m_ruleApplicator->noScreenShare().valueOrDefault();
+    bool windowShareDenied = m_session->m_type == SHARE_WINDOW && m_session->m_window->m_ruleApplicator &&
+        (m_session->m_window->m_ruleApplicator->noScreenShare().valueOrDefault() || m_session->m_window->m_ruleApplicator->hideFromScreenShare().valueOrDefault());
     g_pHyprRenderer->startRenderPass(ctx);
     if (PERM == PERMISSION_RULE_ALLOW_MODE_DENY || windowShareDenied) {
         CBox texbox = CBox{m_bufferSize / 2.F, g_pHyprRenderer->m_screencopyDeniedTexture->m_size}.translate(-g_pHyprRenderer->m_screencopyDeniedTexture->m_size / 2.F);
@@ -382,10 +480,15 @@ void CScreenshareFrame::render(Render::CRenderContext& ctx) {
     }
 
     if (m_session->m_tempFB && m_session->m_tempFB->isAllocated()) {
-        CBox texbox = {{}, m_bufferSize};
-        g_pHyprRenderer->draw(ctx, CTexPassElement::SRenderData{.tex = m_session->m_tempFB->getTexture(), .box = texbox}, texbox);
+        // A rule may have changed while the permission prompt was open. Prefer
+        // the freshly filtered scene over a snapshot taken before that change.
+        if (!m_useFilteredMonitor) {
+            CBox texbox = {{}, m_bufferSize};
+            g_pHyprRenderer->draw(ctx, CTexPassElement::SRenderData{.tex = m_session->m_tempFB->getTexture(), .box = texbox}, texbox);
+        }
         m_session->m_tempFB->release();
-        return;
+        if (!m_useFilteredMonitor)
+            return;
     }
 
     switch (m_session->m_type) {

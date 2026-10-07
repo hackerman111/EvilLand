@@ -40,6 +40,9 @@ eTargetType CWindowTarget::type() {
 }
 
 void CWindowTarget::setPositionGlobal(const STargetBox& box, uint8_t flags) {
+    if (const auto GUARD = Desktop::focusState()->guardedWindow(); GUARD && m_window == GUARD)
+        return;
+
     ITarget::setPositionGlobal(box, flags);
 
     updatePos(flags);
@@ -48,6 +51,9 @@ void CWindowTarget::setPositionGlobal(const STargetBox& box, uint8_t flags) {
 void CWindowTarget::updatePos(uint8_t flags) {
 
     if (!m_window)
+        return;
+
+    if (const auto GUARD = Desktop::focusState()->guardedWindow(); GUARD && m_window == GUARD)
         return;
 
     const auto effectiveWindow = [&]() {
@@ -257,6 +263,9 @@ void CWindowTarget::updatePos(uint8_t flags) {
 }
 
 void CWindowTarget::assignToSpace(const SP<CSpace>& space, std::optional<Vector2D> focalPoint) {
+    if (const auto GUARD = Desktop::focusState()->guardedWindow(); GUARD && m_window == GUARD && space != m_space)
+        return;
+
     if (!space) {
         ITarget::assignToSpace(space, focalPoint);
         return;
@@ -283,6 +292,9 @@ bool CWindowTarget::floating() {
 }
 
 void CWindowTarget::setFloating(bool x) {
+    if (const auto GUARD = Desktop::focusState()->guardedWindow(); GUARD && m_window == GUARD)
+        return;
+
     if (x == m_floating)
         return;
 

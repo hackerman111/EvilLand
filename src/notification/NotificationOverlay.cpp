@@ -288,7 +288,8 @@ CBox CNotificationOverlay::drawNotifications(Render::CRenderContext& ctx, PHLMON
     }
 
     // cleanup notifs
-    std::erase_if(m_notifications, [&](const auto& notif) { return notif->gone(); });
+    if (!ctx.readOnlyEffects())
+        std::erase_if(m_notifications, [&](const auto& notif) { return notif->gone(); });
 
     return CBox{sc<int>(pMonitor->m_position.x + pMonitor->m_size.x - maxWidth - NOTIF_DAMAGE_PAD_X), sc<int>(pMonitor->m_position.y), sc<int>(maxWidth + NOTIF_DAMAGE_PAD_X),
                 sc<int>(offsetY + NOTIF_OFFSET_Y)};
@@ -297,6 +298,8 @@ CBox CNotificationOverlay::drawNotifications(Render::CRenderContext& ctx, PHLMON
 void CNotificationOverlay::draw(Render::CRenderContext& ctx, PHLMONITOR pMonitor) {
     // Draw the notifications
     if (m_notifications.empty()) {
+        if (ctx.readOnlyEffects())
+            return;
         if (m_lastDamage.width > 0 && m_lastDamage.height > 0)
             g_pHyprRenderer->damageBox(m_lastDamage);
         m_lastDamage = {};
@@ -304,6 +307,9 @@ void CNotificationOverlay::draw(Render::CRenderContext& ctx, PHLMONITOR pMonitor
     }
 
     CBox damage = drawNotifications(ctx, pMonitor);
+
+    if (ctx.readOnlyEffects())
+        return;
 
     g_pHyprRenderer->damageBox(damage);
     g_pHyprRenderer->damageBox(m_lastDamage);

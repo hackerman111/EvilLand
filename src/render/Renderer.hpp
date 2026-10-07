@@ -101,6 +101,8 @@ namespace Render {
         void                            damageMonitor(PHLMONITOR);
         void                            damageMirrorsWith(PHLMONITOR, const CRegion&);
         bool                            shouldRenderWindow(PHLWINDOW, PHLMONITOR);
+        bool                            shouldRenderWindowForScreenShare(PHLWINDOW window, PHLMONITOR monitor);
+        float                           layerAlphaForScreenShare(PHLLS layer, PHLMONITOR monitor);
         bool                            shouldRenderWindow(PHLWINDOW);
         bool                            shouldRenderMonitor(PHLMONITOR);
         void                            ensureCursorRenderingMode();
@@ -340,7 +342,8 @@ namespace Render {
       private:
         bool m_renderingMonitor = false;
 
-        bool shouldRenderWindowInScene(PHLWINDOW window, PHLMONITOR monitor, PHLWORKSPACE workspace, eSceneMode mode);
+        bool shouldRenderWindow(PHLWINDOW window, PHLMONITOR monitor, bool ignoreFullscreen);
+        bool shouldRenderWindowInScene(CRenderContext& ctx, PHLWINDOW window, PHLMONITOR monitor, PHLWORKSPACE workspace, eSceneMode mode);
         void renderMonitorBackground(CRenderContext& ctx, PHLMONITOR pMonitor, const Time::steady_tp& time, PHLWORKSPACE workspace, eSceneMode mode);
         void renderFadeouts(CRenderContext& ctx, PHLMONITOR monitor, Desktop::eFadeoutPlane plane, PHLWORKSPACE workspace, eSceneMode mode);
         bool bindOffMain(CRenderContext& ctx);

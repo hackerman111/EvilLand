@@ -178,12 +178,12 @@ void COverlay::updateReservedArea(PHLMONITOR monitor) {
 
 void COverlay::draw(Render::CRenderContext& ctx) {
     if (!m_isCreated || !m_queued.empty()) {
-        if (!m_queued.empty())
+        if (!m_queued.empty() && !ctx.readOnlyEffects())
             createQueued();
         return;
     }
 
-    if (m_queuedDestroy) {
+    if (m_queuedDestroy && !ctx.readOnlyEffects()) {
         if (!m_fadeOpacity->isBeingAnimated()) {
             if (m_fadeOpacity->value() == 0.f) {
                 m_queuedDestroy = false;
@@ -215,15 +215,17 @@ void COverlay::draw(Render::CRenderContext& ctx) {
     const float barY     = TOPBAR ? m_outerPad : PMONITOR->m_transformedSize.y - m_lastHeight - m_outerPad;
     const CBox  barBox   = {m_outerPad, barY, barWidth, m_lastHeight};
 
-    m_damageBox.x      = sc<int>(PMONITOR->m_position.x);
-    m_damageBox.width  = sc<int>(PMONITOR->m_transformedSize.x);
-    m_damageBox.height = sc<int>(m_lastHeight + m_outerPad * 2.F);
-    m_damageBox.y      = sc<int>(PMONITOR->m_position.y + (TOPBAR ? 0 : PMONITOR->m_transformedSize.y - m_damageBox.height));
+    if (!ctx.readOnlyEffects()) {
+        m_damageBox.x      = sc<int>(PMONITOR->m_position.x);
+        m_damageBox.width  = sc<int>(PMONITOR->m_transformedSize.x);
+        m_damageBox.height = sc<int>(m_lastHeight + m_outerPad * 2.F);
+        m_damageBox.y      = sc<int>(PMONITOR->m_position.y + (TOPBAR ? 0 : PMONITOR->m_transformedSize.y - m_damageBox.height));
 
-    if (m_fadeOpacity->isBeingAnimated() || m_monitorChanged)
-        g_pHyprRenderer->damageBox(m_damageBox);
+        if (m_fadeOpacity->isBeingAnimated() || m_monitorChanged)
+            g_pHyprRenderer->damageBox(m_damageBox);
 
-    m_monitorChanged = false;
+        m_monitorChanged = false;
+    }
 
     const float                 opacity = m_fadeOpacity->value();
 

@@ -82,6 +82,9 @@ SP<CSpace> CAlgorithm::space() const {
 }
 
 void CAlgorithm::setFloating(SP<ITarget> target, bool floating, bool reposition) {
+    if (const auto GUARD = Desktop::focusState()->guardedWindow(); GUARD && target->window() == GUARD)
+        return;
+
     removeTarget(target);
 
     g_pHyprRenderer->damageWindow(target->window());
@@ -122,6 +125,9 @@ std::optional<Vector2D> CAlgorithm::predictSizeForNewTiledTarget() {
 }
 
 void CAlgorithm::resizeTarget(const Vector2D& Δ, SP<ITarget> target, eRectCorner corner) {
+    if (const auto GUARD = Desktop::focusState()->guardedWindow(); GUARD && target->window() == GUARD)
+        return;
+
     if (target->floating())
         m_floating->resizeTarget(Δ, target, corner);
     else
@@ -129,6 +135,9 @@ void CAlgorithm::resizeTarget(const Vector2D& Δ, SP<ITarget> target, eRectCorne
 }
 
 void CAlgorithm::moveTarget(const Vector2D& Δ, SP<ITarget> target) {
+    if (const auto GUARD = Desktop::focusState()->guardedWindow(); GUARD && target->window() == GUARD)
+        return;
+
     if (target->floating())
         m_floating->moveTarget(Δ, target);
 }

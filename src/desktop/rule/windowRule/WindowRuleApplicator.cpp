@@ -5,6 +5,7 @@
 #include "../../view/window/Window.hpp"
 #include "../../view/window/WindowPresentation.hpp"
 #include "../../types/OverridableVar.hpp"
+#include "../../state/FocusState.hpp"
 #include "../../../event/EventBus.hpp"
 #include "../../../helpers/MiscFunctions.hpp"
 #include "desktop/rule/windowRule/WindowRuleEffectContainer.hpp"
@@ -55,14 +56,16 @@ std::unordered_set<CWindowRuleEffectContainer::storageType> CWindowRuleApplicato
             std::pair{std::ref(m_syncFullscreen), [this] { return syncFullscreenEffect(); }}, std::pair{std::ref(m_tearing), [this] { return tearingEffect(); }},
             std::pair{std::ref(m_xray), [this] { return xrayEffect(); }}, std::pair{std::ref(m_renderUnfocused), [this] { return renderUnfocusedEffect(); }},
             std::pair{std::ref(m_noFollowMouse), [this] { return noFollowMouseEffect(); }}, std::pair{std::ref(m_noScreenShare), [this] { return noScreenShareEffect(); }},
-            std::pair{std::ref(m_noVRR), [this] { return noVRREffect(); }}, std::pair{std::ref(m_noAutoHDR), [this] { return noAutoHDREffect(); }},
-            std::pair{std::ref(m_persistentSize), [this] { return persistentSizeEffect(); }}, std::pair{std::ref(m_stayFocused), [this] { return stayFocusedEffect(); }},
-            std::pair{std::ref(m_idleInhibitMode), [this] { return idleInhibitModeEffect(); }}, std::pair{std::ref(m_confinePointer), [this] { return confinePointerEffect(); }},
-            std::pair{std::ref(m_noXdgDrags), [this] { return noXdgDragsEffect(); }}, std::pair{std::ref(m_borderSize), [this] { return borderSizeEffect(); }},
-            std::pair{std::ref(m_rounding), [this] { return roundingEffect(); }}, std::pair{std::ref(m_roundingPower), [this] { return roundingPowerEffect(); }},
-            std::pair{std::ref(m_scrollMouse), [this] { return scrollMouseEffect(); }}, std::pair{std::ref(m_scrollTouchpad), [this] { return scrollTouchpadEffect(); }},
-            std::pair{std::ref(m_animationStyle), [this] { return animationStyleEffect(); }}, std::pair{std::ref(m_maxSize), [this] { return maxSizeEffect(); }},
-            std::pair{std::ref(m_minSize), [this] { return minSizeEffect(); }}, std::pair{std::ref(m_activeBorderColor), [this] { return activeBorderColorEffect(); }},
+            std::pair{std::ref(m_hideFromScreenShare), [this] { return hideFromScreenShareEffect(); }}, std::pair{std::ref(m_noVRR), [this] { return noVRREffect(); }},
+            std::pair{std::ref(m_preservePreviousFocus), [this] { return preservePreviousFocusEffect(); }}, std::pair{std::ref(m_noAutoHDR), [this] { return noAutoHDREffect(); }},
+            std::pair{std::ref(m_focusGuard), [this] { return focusGuardEffect(); }}, std::pair{std::ref(m_persistentSize), [this] { return persistentSizeEffect(); }},
+            std::pair{std::ref(m_stayFocused), [this] { return stayFocusedEffect(); }}, std::pair{std::ref(m_idleInhibitMode), [this] { return idleInhibitModeEffect(); }},
+            std::pair{std::ref(m_confinePointer), [this] { return confinePointerEffect(); }}, std::pair{std::ref(m_noXdgDrags), [this] { return noXdgDragsEffect(); }},
+            std::pair{std::ref(m_borderSize), [this] { return borderSizeEffect(); }}, std::pair{std::ref(m_rounding), [this] { return roundingEffect(); }},
+            std::pair{std::ref(m_roundingPower), [this] { return roundingPowerEffect(); }}, std::pair{std::ref(m_scrollMouse), [this] { return scrollMouseEffect(); }},
+            std::pair{std::ref(m_scrollTouchpad), [this] { return scrollTouchpadEffect(); }}, std::pair{std::ref(m_animationStyle), [this] { return animationStyleEffect(); }},
+            std::pair{std::ref(m_maxSize), [this] { return maxSizeEffect(); }}, std::pair{std::ref(m_minSize), [this] { return minSizeEffect(); }},
+            std::pair{std::ref(m_activeBorderColor), [this] { return activeBorderColorEffect(); }},
             std::pair{std::ref(m_inactiveBorderColor), [this] { return inactiveBorderColorEffect(); }}));
 
     if (prio == Types::PRIORITY_WINDOW_RULE) {
@@ -368,6 +371,21 @@ CWindowRuleApplicator::SRuleResult CWindowRuleApplicator::applyDynamicRule(const
                 m_noScreenShare.second |= rule->getPropertiesMask();
                 break;
             }
+            case WINDOW_RULE_EFFECT_HIDE_FROM_SCREEN_SHARE: {
+                m_hideFromScreenShare.first.set(std::get<bool>(value), Types::PRIORITY_WINDOW_RULE);
+                m_hideFromScreenShare.second |= rule->getPropertiesMask();
+                break;
+            }
+            case WINDOW_RULE_EFFECT_PRESERVE_PREVIOUS_FOCUS: {
+                m_preservePreviousFocus.first.set(std::get<bool>(value), Types::PRIORITY_WINDOW_RULE);
+                m_preservePreviousFocus.second |= rule->getPropertiesMask();
+                break;
+            }
+            case WINDOW_RULE_EFFECT_FOCUS_GUARD: {
+                m_focusGuard.first.set(std::get<bool>(value), Types::PRIORITY_WINDOW_RULE);
+                m_focusGuard.second |= rule->getPropertiesMask();
+                break;
+            }
             case WINDOW_RULE_EFFECT_NO_VRR: {
                 m_noVRR.first.set(std::get<bool>(value), Types::PRIORITY_WINDOW_RULE);
                 m_noVRR.second |= rule->getPropertiesMask();
@@ -619,6 +637,8 @@ void CWindowRuleApplicator::propertiesChanged(std::underlying_type_t<eRuleProper
     m_window->updateWindowData();
     m_window->presentation().updateDecorations();
     m_window->presentation().refreshValues();
+
+    Desktop::focusState()->refreshPreservedFocus();
 
     if (needsRelayout)
         g_pDecorationPositioner->forceRecalcFor(m_window.lock());

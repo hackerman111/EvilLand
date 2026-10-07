@@ -4,6 +4,7 @@
 #include "../../devices/IKeyboard.hpp"
 #include "../../devices/IHID.hpp"
 #include "../../managers/SeatManager.hpp"
+#include "../../desktop/state/FocusState.hpp"
 #include "../../helpers/time/Time.hpp"
 #include "../../config/ConfigValue.hpp"
 #include <algorithm>
@@ -351,11 +352,14 @@ CWLKeyboardResource::CWLKeyboardResource(SP<CWlKeyboard> resource_, SP<CWLSeatRe
     sendKeymap(g_pSeatManager->m_keyboard.lock());
     repeatInfo(g_pSeatManager->m_keyboard->m_repeatRate, g_pSeatManager->m_keyboard->m_repeatDelay);
 
-    if (g_pSeatManager->m_state.keyboardFocus && g_pSeatManager->m_state.keyboardFocus->client() == m_resource->client()) {
+    const auto FOCUS     = g_pSeatManager->m_state.keyboardFocus.lock();
+    const auto PRESERVED = Desktop::focusState()->preservedSurface();
+    const auto SURFACE   = FOCUS && FOCUS->client() == m_resource->client() ? FOCUS : PRESERVED;
+    if (SURFACE && SURFACE->client() == m_resource->client()) {
         wl_array keys;
         wl_array_init(&keys);
 
-        sendEnter(g_pSeatManager->m_state.keyboardFocus.lock(), &keys);
+        sendEnter(SURFACE, &keys);
 
         wl_array_release(&keys);
     }
@@ -402,7 +406,11 @@ void CWLKeyboardResource::sendEnter(SP<CWLSurfaceResource> surface, wl_array* ke
 
     ASSERT(surface->client() == m_owner->client());
 
-    m_currentSurface           = surface;
+    m_currentSurface   = surface;
+    const auto PRESSED = sc<const uint32_t*>(keys->data);
+    m_pressedKeys.clear();
+    if (keys->size > 0)
+        m_pressedKeys.assign(PRESSED, PRESSED + keys->size / sizeof(uint32_t));
     m_listeners.destroySurface = surface->m_events.destroy.listen([this] { sendLeave(); });
 
     m_resource->sendEnter(g_pSeatManager->nextSerial(m_owner.lock()), surface->getResource().get(), keys);
@@ -417,6 +425,7 @@ void CWLKeyboardResource::sendLeave() {
 
     m_resource->sendLeave(g_pSeatManager->nextSerial(m_owner.lock()), m_currentSurface->getResource().get());
     m_currentSurface.reset();
+    m_pressedKeys.clear();
     m_listeners.destroySurface.reset();
 }
 
@@ -427,7 +436,30 @@ void CWLKeyboardResource::sendKey(uint32_t timeMs, uint32_t key, wl_keyboard_key
     if (!(PROTO::seat->m_currentCaps & eHIDCapabilityType::HID_INPUT_CAPABILITY_KEYBOARD))
         return;
 
+    const bool PRESSED = std::ranges::find(m_pressedKeys, key) != m_pressedKeys.end();
+    if (state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+        if (PRESSED)
+            return;
+        m_pressedKeys.push_back(key);
+    } else {
+        if (!PRESSED)
+            return;
+        if (state == WL_KEYBOARD_KEY_STATE_RELEASED)
+            std::erase(m_pressedKeys, key);
+    }
+
     m_resource->sendKey(g_pSeatManager->nextSerial(m_owner.lock()), timeMs, key, state);
+}
+
+SP<CWLSurfaceResource> CWLKeyboardResource::focusedSurface() {
+    return m_currentSurface.lock();
+}
+
+void CWLKeyboardResource::releasePressedKeys() {
+    const auto KEYS = m_pressedKeys;
+    for (const auto KEY : KEYS) {
+        sendKey(sc<uint32_t>(Time::millis(Time::steadyNow())), KEY, WL_KEYBOARD_KEY_STATE_RELEASED);
+    }
 }
 
 void CWLKeyboardResource::sendMods(uint32_t depressed, uint32_t latched, uint32_t locked, uint32_t group) {

@@ -8,6 +8,7 @@
 #include <string>
 #include <fstream>
 #include <utility>
+#include <algorithm>
 
 #include <wayland-client.h>
 #include <wayland.hpp>
@@ -38,10 +39,14 @@ struct SWlState {
     CSharedPointer<CCWlSurface>    surf;
     CSharedPointer<CCXdgSurface>   xdgSurf;
     CSharedPointer<CCXdgToplevel>  xdgToplevel;
-    Vector2D                       geom;
+    Vector2D                       geom = {1280, 720};
 
     CSharedPointer<CCWlKeyboard>   keyboard;
     uint32_t                       lastLocked = 0;
+    uint32_t                       enters = 0, leaves = 0, presses = 0, releases = 0;
+    bool                           focused = false, active = false, suspended = false;
+    bool                           unmapped = false;
+    std::string                    appID    = "keyboard-modifiers";
 };
 
 static std::ofstream logfile;
@@ -81,7 +86,7 @@ static bool bindRegistry(SWlState& state) {
             state.wlSeat = makeShared<CCWlSeat>((wl_proxy*)wl_registry_bind((wl_registry*)state.registry->resource(), id, &wl_seat_interface, 9));
         } else if (NAME == "xdg_wm_base") {
             debugLog("  > binding to global: {} (version {}) with id {}", name, version, id);
-            state.xdgShell = makeShared<CCXdgWmBase>((wl_proxy*)wl_registry_bind((wl_registry*)state.registry->resource(), id, &xdg_wm_base_interface, 1));
+            state.xdgShell = makeShared<CCXdgWmBase>((wl_proxy*)wl_registry_bind((wl_registry*)state.registry->resource(), id, &xdg_wm_base_interface, std::min(version, 6U)));
         }
     });
     state.registry->setGlobalRemove([](CCWlRegistry* r, uint32_t id) { debugLog("Global {} removed", id); });
@@ -170,21 +175,34 @@ static bool setupToplevel(SWlState& state) {
     state.xdgToplevel->setClose([&](CCXdgToplevel* p) { exit(0); });
 
     state.xdgToplevel->setConfigure([&](CCXdgToplevel* p, int32_t w, int32_t h, wl_array* arr) {
-        state.geom = {1280, 720};
-
-        if (!createShm(state, state.geom))
-            exit(-1);
+        state.active      = false;
+        state.suspended   = false;
+        const auto STATES = static_cast<const uint32_t*>(arr->data);
+        for (size_t i = 0; i < arr->size / sizeof(uint32_t); ++i) {
+            if (STATES[i] == XDG_TOPLEVEL_STATE_ACTIVATED)
+                state.active = true;
+            if (STATES[i] == XDG_TOPLEVEL_STATE_SUSPENDED)
+                state.suspended = true;
+        }
+        const Vector2D GEOM = {w > 0 ? w : state.geom.x, h > 0 ? h : state.geom.y};
+        if (!state.unmapped && (!state.shmBuf || GEOM != state.geom)) {
+            state.geom = GEOM;
+            if (!createShm(state, state.geom))
+                exit(-1);
+        }
     });
 
     state.xdgSurf->setConfigure([&](CCXdgSurface* p, uint32_t serial) {
         if (!state.shmBuf)
             debugLog("xdgSurf configure but no buf made yet?");
 
-        state.xdgSurf->sendSetWindowGeometry(0, 0, state.geom.x, state.geom.y);
-        state.surf->sendAttach(state.shmBuf.get(), 0, 0);
-        state.surf->sendCommit();
-
         state.xdgSurf->sendAckConfigure(serial);
+
+        if (!state.unmapped) {
+            state.xdgSurf->sendSetWindowGeometry(0, 0, state.geom.x, state.geom.y);
+            state.surf->sendAttach(state.shmBuf.get(), 0, 0);
+            state.surf->sendCommit();
+        }
 
         if (!started) {
             started = true;
@@ -193,7 +211,7 @@ static bool setupToplevel(SWlState& state) {
     });
 
     state.xdgToplevel->sendSetTitle("keyboard-modifiers test client");
-    state.xdgToplevel->sendSetAppId("keyboard-modifiers");
+    state.xdgToplevel->sendSetAppId(state.appID.c_str());
 
     state.surf->sendAttach(nullptr, 0, 0);
     state.surf->sendCommit();
@@ -211,7 +229,20 @@ static bool setupSeat(SWlState& state) {
         state.lastLocked = locked;
     });
 
-    state.keyboard->setKey([&](CCWlKeyboard* p, uint32_t serial, uint32_t time, uint32_t key, uint32_t state) { debugLog("Got key event: key={} state={}", key, state); });
+    state.keyboard->setEnter([&](CCWlKeyboard*, uint32_t, wl_proxy*, wl_array*) {
+        state.focused = true;
+        ++state.enters;
+    });
+    state.keyboard->setLeave([&](CCWlKeyboard*, uint32_t, wl_proxy*) {
+        state.focused = false;
+        ++state.leaves;
+    });
+    state.keyboard->setKey([&](CCWlKeyboard*, uint32_t, uint32_t, uint32_t, uint32_t keyState) {
+        if (keyState == WL_KEYBOARD_KEY_STATE_PRESSED)
+            ++state.presses;
+        else if (keyState == WL_KEYBOARD_KEY_STATE_RELEASED)
+            ++state.releases;
+    });
 
     return true;
 }
@@ -219,20 +250,31 @@ static bool setupSeat(SWlState& state) {
 static void parseRequest(SWlState& state, std::string req) {
     if (req.starts_with("get"))
         clientLog("{}", state.lastLocked);
-    else if (req.starts_with("exit"))
+    else if (req.starts_with("stats")) {
+        wl_display_roundtrip(state.display);
+        clientLog("{} {} {} {} {} {}", state.focused, state.active, state.enters, state.leaves, state.presses, state.releases);
+    } else if (req.starts_with("suspended")) {
+        wl_display_roundtrip(state.display);
+        clientLog("{}", state.suspended);
+    } else if (req.starts_with("unmap")) {
+        state.unmapped = true;
+        state.surf->sendAttach(nullptr, 0, 0);
+        state.surf->sendCommit();
+        wl_display_roundtrip(state.display);
+        clientLog("unmapped");
+    } else if (req.starts_with("exit"))
         shouldExit = true;
 }
 
 int main(int argc, char** argv) {
     logfile.open("keyboard-modifiers.txt", std::ios::trunc);
 
-    if (argc != 1 && argc != 2)
-        clientLog("Only the \"--debug\" switch is allowed, it turns on debug logs.");
-
     if (argc == 2 && std::string{argv[1]} == "--debug")
         debug = true;
 
     SWlState state;
+    if (argc == 2 && !debug)
+        state.appID = argv[1];
 
     state.display = wl_display_connect(nullptr);
     if (!state.display) {

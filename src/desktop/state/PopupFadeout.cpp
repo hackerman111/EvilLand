@@ -45,10 +45,15 @@ SP<CPopupFadeout> CPopupFadeout::create(SP<CPopup> popup, SP<Render::IFramebuffe
     fadeout->m_monitor     = MONITOR;
     fadeout->m_framebuffer = snapshot;
 
-    if (const auto WINDOW = popup->windowOwner(); WINDOW)
-        fadeout->m_source = {.type = eFadeoutSource::WINDOW, .workspace = WINDOW->m_workspace};
-    else if (popup->layerOwner())
-        fadeout->m_source.type = eFadeoutSource::LAYER;
+    if (const auto WINDOW = popup->windowOwner(); WINDOW) {
+        fadeout->m_source                = {.type = eFadeoutSource::WINDOW, .workspace = WINDOW->m_workspace};
+        fadeout->m_hiddenFromScreenShare = WINDOW->m_ruleApplicator->hideFromScreenShare().valueOrDefault();
+        fadeout->m_screenShareWindow     = WINDOW;
+    } else if (const auto LAYER = popup->layerOwner(); LAYER) {
+        fadeout->m_source.type           = eFadeoutSource::LAYER;
+        fadeout->m_hiddenFromScreenShare = LAYER->m_ruleApplicator->hideFromScreenShare().valueOrDefault();
+        fadeout->m_screenShareLayer      = LAYER;
+    }
 
     static CConfigValue PBLURIGNOREA = CConfigValue<Config::FLOAT>("decoration:blur:popups_ignorealpha");
     if (shouldBlurPopup()) {

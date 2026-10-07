@@ -116,19 +116,24 @@ class CWLKeyboardResource {
   public:
     CWLKeyboardResource(SP<CWlKeyboard> resource_, SP<CWLSeatResource> owner_);
 
-    bool                good();
-    void                sendKeymap(SP<IKeyboard> keeb);
-    void                sendEnter(SP<CWLSurfaceResource> surface, wl_array* keys);
-    void                sendLeave();
-    void                sendKey(uint32_t timeMs, uint32_t key, wl_keyboard_key_state state);
-    void                sendMods(uint32_t depressed, uint32_t latched, uint32_t locked, uint32_t group);
-    void                repeatInfo(uint32_t rate, uint32_t delayMs);
+    bool                   good();
+    void                   sendKeymap(SP<IKeyboard> keeb);
+    void                   sendEnter(SP<CWLSurfaceResource> surface, wl_array* keys);
+    void                   sendLeave();
+    void                   sendKey(uint32_t timeMs, uint32_t key, wl_keyboard_key_state state);
+    void                   sendMods(uint32_t depressed, uint32_t latched, uint32_t locked, uint32_t group);
+    void                   repeatInfo(uint32_t rate, uint32_t delayMs);
 
-    WP<CWLSeatResource> m_owner;
+    SP<CWLSurfaceResource> focusedSurface();
+    void                   releasePressedKeys();
+
+    WP<CWLSeatResource>    m_owner;
 
   private:
     SP<CWlKeyboard>        m_resource;
     WP<CWLSurfaceResource> m_currentSurface;
+
+    std::vector<uint32_t>  m_pressedKeys;
 
     struct {
         CHyprSignalListener destroySurface;

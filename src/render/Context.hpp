@@ -77,6 +77,7 @@ namespace Render {
 
         bool                               m_blockSurfaceFeedback = false;
         bool                               m_renderingSnapshot    = false;
+        bool                               m_renderingScreenShare = false;
         bool                               m_swapchainAcquired    = false;
 
         struct {

@@ -34,4 +34,5 @@ namespace Render {
 
     SWindowRenderPresentation resolveWindowPresentation(const SWindowPresentationState& state);
     SWindowRenderPresentation resolveWindowPresentation(const SWindowPresentationState& state, eSceneMode mode);
+    SWindowRenderPresentation resolveWindowPresentation(SWindowPresentationState state, eSceneMode mode, bool ignoreFullscreen);
 }

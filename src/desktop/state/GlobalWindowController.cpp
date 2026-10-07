@@ -1,6 +1,7 @@
 #include "GlobalWindowController.hpp"
 
 #include "WindowState.hpp"
+#include "FocusState.hpp"
 #include "../view/window/Window.hpp"
 #include "../view/window/WindowGroupMembership.hpp"
 #include "../view/window/WindowPresentation.hpp"
@@ -27,16 +28,20 @@ void CGlobalWindowController::updateAllWindowsDecorations() const {
 }
 
 void CGlobalWindowController::updateSuspendedStates() const {
+    const auto PRESERVED = Desktop::focusState()->preservedWindow();
     for (auto const& w : Desktop::windowState()->windows()) {
         if (!w->mapped())
             continue;
 
-        w->setSuspended(w->isHidden() || !w->m_workspace || !w->m_workspace->visible());
+        w->setSuspended(w->isHidden() || !w->m_workspace || (!w->m_workspace->visible() && w != PRESERVED));
     }
 }
 
 void CGlobalWindowController::moveWindowToWorkspace(PHLWINDOW pWindow, PHLWORKSPACE pWorkspace) const {
     if (!pWindow || !pWorkspace)
+        return;
+
+    if (const auto GUARD = Desktop::focusState()->guardedWindow(); GUARD && pWindow == GUARD)
         return;
 
     if ((pWindow->m_state & Desktop::View::WINDOW_STATE_PINNED) && pWorkspace->type() == Workspace::eWorkspaceType::SPECIAL)

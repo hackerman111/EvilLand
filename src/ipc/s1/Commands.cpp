@@ -1575,6 +1575,12 @@ static std::string dispatchGetProp(eHyprCtlOutputFormat format, std::string requ
         return windowPropToString(PWINDOW->m_ruleApplicator->noFollowMouse());
     else if (PROP == "no_screen_share")
         return windowPropToString(PWINDOW->m_ruleApplicator->noScreenShare());
+    else if (PROP == "hide_from_screen_share")
+        return windowPropToString(PWINDOW->m_ruleApplicator->hideFromScreenShare());
+    else if (PROP == "preserve_previous_focus")
+        return windowPropToString(PWINDOW->m_ruleApplicator->preservePreviousFocus());
+    else if (PROP == "focus_guard")
+        return windowPropToString(PWINDOW->m_ruleApplicator->focusGuard());
     else if (PROP == "no_vrr")
         return windowPropToString(PWINDOW->m_ruleApplicator->noVRR());
     else if (PROP == "no_auto_hdr")

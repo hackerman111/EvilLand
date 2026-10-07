@@ -179,7 +179,9 @@ CRegion CSurfacePassElement::visibleRegion(Render::CRenderContext& ctx, bool& ca
 }
 
 void CSurfacePassElement::discard(Render::CRenderContext& ctx) {
-    if (!ctx.m_blockSurfaceFeedback) {
+    if (ctx.m_renderingScreenShare)
+        m_data.surface->frame(m_data.when);
+    else if (!ctx.m_blockSurfaceFeedback) {
         LOG(Log::TRACE, "discard for invisible surface");
         m_data.surface->presentFeedback(m_data.when, m_data.pMonitor->m_self.lock(), true);
     }

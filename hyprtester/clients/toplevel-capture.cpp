@@ -16,9 +16,11 @@
 #include <wayland.hpp>
 #include <wlr-foreign-toplevel-management-unstable-v1.hpp>
 #include <hyprland-toplevel-export-v1.hpp>
+#include <wlr-screencopy-unstable-v1.hpp>
 
 #include <hyprutils/memory/Casts.hpp>
 #include <hyprutils/memory/SharedPtr.hpp>
+#include <hyprutils/memory/WeakPtr.hpp>
 
 using namespace Hyprutils::Memory;
 
@@ -35,12 +37,17 @@ struct SState {
     CSharedPointer<CCWlShm>                           shm;
     CSharedPointer<CCZwlrForeignToplevelManagerV1>    toplevelMgr;
     CSharedPointer<CCHyprlandToplevelExportManagerV1> exportMgr;
+    CSharedPointer<CCZwlrScreencopyManagerV1>         screencopyMgr;
+    std::vector<CSharedPointer<CCWlOutput>>           outputs;
+    CSharedPointer<CCWlOutput>                        monitor;
+    std::string                                       monitorName;
 
     std::vector<CSharedPointer<SHandle>>              handles;
     CSharedPointer<CCZwlrForeignToplevelHandleV1>     target;
     std::string                                       targetAppID;
 
     CSharedPointer<CCHyprlandToplevelExportFrameV1>   frame;
+    CSharedPointer<CCZwlrScreencopyFrameV1>           monitorFrame;
     CSharedPointer<CCWlShmPool>                       pool;
     CSharedPointer<CCWlBuffer>                        buffer;
     int                                               bufferFD = -1;
@@ -66,6 +73,19 @@ static bool bindGlobals(SState& state) {
 
         if (IFACE == "wl_shm") {
             state.shm = makeShared<CCWlShm>(rc<wl_proxy*>(wl_registry_bind(rc<wl_registry*>(r->resource()), name, &wl_shm_interface, 1)));
+
+        } else if (IFACE == "zwlr_screencopy_manager_v1") {
+            state.screencopyMgr = makeShared<CCZwlrScreencopyManagerV1>(
+                rc<wl_proxy*>(wl_registry_bind(rc<wl_registry*>(r->resource()), name, &zwlr_screencopy_manager_v1_interface, std::min(ver, 3U))));
+
+        } else if (IFACE == "wl_output" && ver >= 4) {
+            const auto                     OUTPUT = makeShared<CCWlOutput>(rc<wl_proxy*>(wl_registry_bind(rc<wl_registry*>(r->resource()), name, &wl_output_interface, 4)));
+            const CWeakPointer<CCWlOutput> WEAK   = OUTPUT;
+            OUTPUT->setName([&state, WEAK](CCWlOutput*, const char* outputName) {
+                if (state.monitorName == outputName)
+                    state.monitor = WEAK.lock();
+            });
+            state.outputs.emplace_back(OUTPUT);
 
         } else if (IFACE == "zwlr_foreign_toplevel_manager_v1") {
             state.toplevelMgr = makeShared<CCZwlrForeignToplevelManagerV1>(
@@ -98,7 +118,65 @@ static bool bindGlobals(SState& state) {
     if (wl_display_roundtrip(state.display) < 0)
         return false;
 
+    if (!state.monitorName.empty())
+        return state.shm && state.screencopyMgr;
     return state.shm && state.toplevelMgr && state.exportMgr;
+}
+
+static bool requestMonitorCapture(SState& state) {
+    for (size_t i = 0; i < 3 && !state.monitor; ++i) {
+        if (wl_display_roundtrip(state.display) < 0)
+            return false;
+    }
+    if (!state.monitor)
+        return false;
+
+    state.monitorFrame = makeShared<CCZwlrScreencopyFrameV1>(state.screencopyMgr->sendCaptureOutput(0, rc<wl_proxy*>(state.monitor->resource())));
+    state.monitorFrame->setBuffer([&state](CCZwlrScreencopyFrameV1*, uint32_t fmt, uint32_t w, uint32_t h, uint32_t stride) {
+        state.bufferFormat = fmt;
+        state.bufferWidth  = w;
+        state.bufferHeight = h;
+        state.bufferStride = stride;
+    });
+    state.monitorFrame->setReady([&state](CCZwlrScreencopyFrameV1*, uint32_t, uint32_t, uint32_t) {
+        state.frameReceived = true;
+        state.shouldExit    = true;
+    });
+    state.monitorFrame->setFailed([&state](CCZwlrScreencopyFrameV1*) { state.shouldExit = true; });
+    state.monitorFrame->setFlags([](CCZwlrScreencopyFrameV1*, uint32_t) {});
+    state.monitorFrame->setDamage([](CCZwlrScreencopyFrameV1*, uint32_t, uint32_t, uint32_t, uint32_t) {});
+    state.monitorFrame->setLinuxDmabuf([](CCZwlrScreencopyFrameV1*, uint32_t, uint32_t, uint32_t) {});
+    state.monitorFrame->setBufferDone([&state](CCZwlrScreencopyFrameV1*) {
+        if (!createCaptureBuffer(state)) {
+            state.shouldExit = true;
+            return;
+        }
+        state.monitorFrame->sendCopy(rc<wl_proxy*>(state.buffer->resource()));
+    });
+    return true;
+}
+
+static bool printMonitorChecksum(const SState& state) {
+    const size_t SIZE = sc<size_t>(state.bufferStride) * state.bufferHeight;
+    if (state.bufferStride < state.bufferWidth * sizeof(uint32_t))
+        return false;
+
+    const auto DATA = mmap(nullptr, SIZE, PROT_READ, MAP_SHARED, state.bufferFD, 0);
+    if (DATA == MAP_FAILED)
+        return false;
+
+    uint64_t hash = 14695981039346656037ULL;
+    for (uint32_t y = 0; y < state.bufferHeight; ++y) {
+        const auto ROW = rc<const uint32_t*>(rc<const uint8_t*>(DATA) + sc<size_t>(y) * state.bufferStride);
+        for (uint32_t x = 0; x < state.bufferWidth; ++x) {
+            // Ignore alpha and row padding, which XRGB captures do not define.
+            hash ^= ROW[x] & 0xFFFFFFU;
+            hash *= 1099511628211ULL;
+        }
+    }
+    munmap(DATA, SIZE);
+    std::println("{}x{}:{}", state.bufferWidth, state.bufferHeight, hash);
+    return true;
 }
 
 static bool findTarget(SState& state) {
@@ -218,12 +296,16 @@ static void disconnect(SState& state) {
         return;
 
     state.frame.reset();
+    state.monitorFrame.reset();
     state.buffer.reset();
     state.pool.reset();
     state.target.reset();
     state.handles.clear();
     state.toplevelMgr.reset();
     state.exportMgr.reset();
+    state.screencopyMgr.reset();
+    state.monitor.reset();
+    state.outputs.clear();
     state.shm.reset();
     state.registry.reset();
 
@@ -236,14 +318,18 @@ static void disconnect(SState& state) {
 }
 
 int main(int argc, char** argv) {
-    if (argc != 2) {
-        std::println(stderr, "usage: toplevel-capture <app-id>");
+    const bool MONITOR_CAPTURE = argc == 3 && std::string_view{argv[1]} == "--monitor";
+    if (argc != 2 && !MONITOR_CAPTURE) {
+        std::println(stderr, "usage: toplevel-capture <app-id> | --monitor <output-name>");
         return 1;
     }
 
     SState state;
-    state.targetAppID = argv[1];
-    state.display     = wl_display_connect(nullptr);
+    if (MONITOR_CAPTURE)
+        state.monitorName = argv[2];
+    else
+        state.targetAppID = argv[1];
+    state.display = wl_display_connect(nullptr);
     if (!state.display) {
         std::println(stderr, "failed to connect to Wayland display");
         return 1;
@@ -255,13 +341,13 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (!findTarget(state)) {
+    if (!MONITOR_CAPTURE && !findTarget(state)) {
         std::println(stderr, "no foreign toplevel found for app ID '{}'", state.targetAppID);
         disconnect(state);
         return 1;
     }
 
-    if (!requestCapture(state)) {
+    if (MONITOR_CAPTURE ? !requestMonitorCapture(state) : !requestCapture(state)) {
         std::println(stderr, "failed to request toplevel capture");
         disconnect(state);
         return 1;
@@ -273,7 +359,7 @@ int main(int argc, char** argv) {
     if (!state.frameReceived)
         std::println(stderr, "did not receive a captured frame");
 
-    const bool RESULT = state.frameReceived;
+    const bool RESULT = state.frameReceived && (!MONITOR_CAPTURE || printMonitorChecksum(state));
     disconnect(state);
     return RESULT ? 0 : 1;
 }

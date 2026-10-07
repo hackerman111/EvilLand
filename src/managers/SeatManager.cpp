@@ -10,6 +10,7 @@
 #include "../protocols/PointerConstraints.hpp"
 #include "../Compositor.hpp"
 #include "../desktop/state/FocusState.hpp"
+#include "../desktop/view/window/Window.hpp"
 #include "../devices/IKeyboard.hpp"
 #include "../desktop/view/LayerSurface.hpp"
 #include "../managers/input/InputManager.hpp"
@@ -238,7 +239,22 @@ void CSeatManager::updateActiveKeyboardData() {
 }
 
 void CSeatManager::setKeyboardFocus(SP<CWLSurfaceResource> surf) {
-    if (m_state.keyboardFocus == surf)
+    if (const auto GUARD = Desktop::focusState()->guardedWindow()) {
+        const auto INPUT = Desktop::focusState()->inputWindow();
+        if (!surf || !validMapped(INPUT) || surf->client() != INPUT->wlSurface()->resource()->client())
+            return;
+    }
+
+    auto       preserved = Desktop::focusState()->preservedSurface();
+    const auto WINDOW    = Desktop::focusState()->inputWindow();
+    if (preserved &&
+        (!surf || !validMapped(WINDOW) || surf->client() != WINDOW->wlSurface()->resource()->client() || (m_seatGrab && m_seatGrab->m_keyboard) ||
+         g_pSessionLockManager->isSessionLocked())) {
+        Desktop::focusState()->releasePreservedFocus();
+        preserved.reset();
+    }
+
+    if (m_state.keyboardFocus == surf && m_preservedKeyboardFocus == preserved)
         return;
 
     if (!g_pInputManager->anyHidHasCap(HID_INPUT_CAPABILITY_KEYBOARD)) {
@@ -254,12 +270,22 @@ void CSeatManager::setKeyboardFocus(SP<CWLSurfaceResource> surf) {
         if (!k)
             continue;
 
+        if (k->focusedSurface() == surf)
+            continue;
+
+        if (preserved && k->focusedSurface() == preserved) {
+            k->releasePressedKeys();
+            k->sendMods(0, 0, m_keyboard->m_modifiersState.locked, m_keyboard->m_modifiersState.group);
+            continue;
+        }
+
         k->sendMods(0, m_keyboard->m_modifiersState.latched, m_keyboard->m_modifiersState.locked, m_keyboard->m_modifiersState.group);
         k->sendLeave();
     }
 
     m_state.keyboardFocusResource.reset();
-    m_state.keyboardFocus = surf;
+    m_state.keyboardFocus    = surf;
+    m_preservedKeyboardFocus = preserved;
 
     if (!surf) {
         m_events.keyboardFocusChange.emit();
@@ -305,7 +331,15 @@ void CSeatManager::setKeyboardFocus(SP<CWLSurfaceResource> surf) {
         }
     }
 
-    m_listeners.keyboardSurfaceDestroy = surf->m_events.destroy.listen([this] { setKeyboardFocus(nullptr); });
+    m_listeners.keyboardSurfaceDestroy = surf->m_events.destroy.listen([this] {
+        const auto PRESERVED = Desktop::focusState()->preservedSurface();
+        const auto SURFACE   = Desktop::View::CWLSurface::fromResource(PRESERVED);
+        const auto WINDOW    = SURFACE ? Desktop::View::CWindow::fromView(SURFACE->view()) : nullptr;
+        if (validMapped(WINDOW) && !WINDOW->isHidden() && WINDOW->m_workspace && WINDOW->m_workspace->visible())
+            Desktop::focusState()->fullWindowFocus(WINDOW, Desktop::FOCUS_REASON_OTHER, PRESERVED);
+        else
+            setKeyboardFocus(nullptr);
+    });
 
     m_events.keyboardFocusChange.emit();
 }
@@ -757,6 +791,9 @@ void CSeatManager::setCurrentPrimarySelection(SP<IDataSource> source) {
 }
 
 void CSeatManager::setGrab(SP<CSeatGrab> grab) {
+    if (grab && grab->m_keyboard && Desktop::focusState()->guardedWindow())
+        return;
+
     if (m_seatGrab) {
         auto oldGrab = m_seatGrab;
 

@@ -487,6 +487,9 @@ void COverlay::draw(Render::CRenderContext& ctx) {
     if (haveAnyBox)
         newDrawnBox = {sc<int>(PMONITOR->m_position.x) + minX, sc<int>(PMONITOR->m_position.y) + minY, maxX - minX, maxY - minY};
 
+    if (ctx.readOnlyEffects())
+        return;
+
     if (cacheUpdated || newDrawnBox != m_lastDrawnBox) {
         if (m_lastDrawnBox.width > 0 && m_lastDrawnBox.height > 0)
             g_pHyprRenderer->damageBox(m_lastDrawnBox);

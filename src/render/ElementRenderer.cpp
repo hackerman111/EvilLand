@@ -428,7 +428,12 @@ void IElementRenderer::drawSurface(CRenderContext& ctx, WP<CSurfacePassElement> 
 
     g_pHyprRenderer->blend(true);
 
-    if (!ctx.m_blockSurfaceFeedback)
+    // Captured public surfaces can be hidden by a private fullscreen window on
+    // the local output. Keep their clients producing frames without reporting
+    // that the capture was presented on the physical monitor.
+    if (ctx.m_renderingScreenShare)
+        element->m_data.surface->frame(element->m_data.when);
+    else if (!ctx.m_blockSurfaceFeedback)
         element->m_data.surface->presentFeedback(element->m_data.when, element->m_data.pMonitor->m_self.lock());
 };
 

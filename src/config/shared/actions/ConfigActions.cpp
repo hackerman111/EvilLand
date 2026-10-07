@@ -672,6 +672,9 @@ ActionResult Actions::resize(const Vector2D& size, bool relative, std::optional<
     if (!window)
         return {};
 
+    if (window == Desktop::focusState()->guardedWindow())
+        return {};
+
     if (Fullscreen::controller()->isFullscreen(window))
         return actionError("Window is fullscreen", eActionErrorLevel::WARNING, eActionErrorCode::INVALID_STATE);
 
@@ -691,6 +694,9 @@ ActionResult Actions::resize(const Vector2D& size, bool relative, std::optional<
 ActionResult Actions::move(const Vector2D& pos, bool relative, std::optional<PHLWINDOW> w) {
     auto window = xtract(w);
     if (!window)
+        return {};
+
+    if (window == Desktop::focusState()->guardedWindow())
         return {};
 
     if (Fullscreen::controller()->isFullscreen(window))
@@ -920,6 +926,12 @@ ActionResult Actions::setProp(const std::string& PROP, const std::string& VAL, s
             parsePropTrivial(PWINDOW->m_ruleApplicator->noFollowMouse(), VAL);
         else if (PROP == "no_screen_share")
             parsePropTrivial(PWINDOW->m_ruleApplicator->noScreenShare(), VAL);
+        else if (PROP == "hide_from_screen_share")
+            parsePropTrivial(PWINDOW->m_ruleApplicator->hideFromScreenShare(), VAL);
+        else if (PROP == "preserve_previous_focus")
+            parsePropTrivial(PWINDOW->m_ruleApplicator->preservePreviousFocus(), VAL);
+        else if (PROP == "focus_guard")
+            parsePropTrivial(PWINDOW->m_ruleApplicator->focusGuard(), VAL);
         else if (PROP == "no_vrr")
             parsePropTrivial(PWINDOW->m_ruleApplicator->noVRR(), VAL);
         else if (PROP == "no_auto_hdr")
@@ -948,6 +960,8 @@ ActionResult Actions::setProp(const std::string& PROP, const std::string& VAL, s
     } catch (std::exception& e) { return std::unexpected(std::format("Error parsing prop value: {}", std::string(e.what()))); }
 
     Desktop::globalWindowController()->updateAllWindowsDecorations();
+
+    Desktop::focusState()->refreshPreservedFocus();
 
     if (PROP == "no_vrr")
         Config::monitorRuleMgr()->ensureVRR();

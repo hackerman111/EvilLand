@@ -11,6 +11,7 @@
 #include "../../layout/target/WindowTarget.hpp"
 
 #include "../../desktop/DesktopTypes.hpp"
+#include "../../desktop/state/FocusState.hpp"
 #include "../../desktop/view/window/Window.hpp"
 #include "../../desktop/view/window/WindowFullscreenPolicy.hpp"
 #include "../../desktop/view/window/WindowPresentation.hpp"
@@ -292,6 +293,10 @@ std::string CFullscreenController::getFullscreenHandlerNameAsString(const PHLWIN
 void CFullscreenController::setFullscreenMode(const PHLWINDOW window, std::optional<eFullscreenMode> internal, std::optional<eFullscreenMode> client,
                                               std::optional<bool> layoutAware, eFullscreenMutationContext context) {
     if (!window)
+        return;
+
+    if (const auto GUARD = Desktop::focusState()->guardedWindow();
+        GUARD && (window == GUARD || (window->m_workspace == GUARD->m_workspace && (internal.value_or(FSMODE_NONE) != FSMODE_NONE || client.value_or(FSMODE_NONE) != FSMODE_NONE))))
         return;
 
     if (context == FULLSCREEN_MUTATION_TRANSFER)

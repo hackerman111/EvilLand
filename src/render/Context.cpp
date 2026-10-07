@@ -79,6 +79,7 @@ void CRenderContext::reset() {
     m_frameTime            = {};
     m_blockSurfaceFeedback = false;
     m_renderingSnapshot    = false;
+    m_renderingScreenShare = false;
     m_swapchainAcquired    = false;
     m_gl                   = {};
     m_active               = false;

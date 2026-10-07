@@ -1353,6 +1353,9 @@ void CMonitor::changeWorkspace(const PHLWORKSPACE& pWorkspace, bool internal, bo
     if (!pWorkspace)
         return;
 
+    if (const auto GUARD = Desktop::focusState()->guardedWindow(); GUARD && GUARD->m_monitor == m_self && GUARD->m_workspace != pWorkspace)
+        return;
+
     if (pWorkspace->type() == Workspace::eWorkspaceType::SPECIAL) {
         if (m_activeSpecialWorkspace != pWorkspace) {
             LOG(Log::DEBUG, "changeworkspace on special, togglespecialworkspace to {}", pWorkspace->addressableName());
@@ -1467,6 +1470,9 @@ void CMonitor::setSpecialWorkspaceVisualState(bool active) {
 }
 
 void CMonitor::setSpecialWorkspace(const PHLWORKSPACE& pWorkspace, bool noFocus) {
+    if (const auto GUARD = Desktop::focusState()->guardedWindow(); GUARD && GUARD->m_monitor == m_self && m_activeSpecialWorkspace != pWorkspace)
+        return;
+
     if (m_activeSpecialWorkspace == pWorkspace)
         return;
 

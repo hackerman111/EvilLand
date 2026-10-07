@@ -61,7 +61,8 @@ static std::expected<LayerRuleEffectValue, std::string> parseLayerRuleEffect(CLa
         case LAYER_RULE_EFFECT_BLUR_POPUPS:
         case LAYER_RULE_EFFECT_DIM_AROUND:
         case LAYER_RULE_EFFECT_XRAY:
-        case LAYER_RULE_EFFECT_NO_SCREEN_SHARE: return truthy(raw);
+        case LAYER_RULE_EFFECT_NO_SCREEN_SHARE:
+        case LAYER_RULE_EFFECT_HIDE_FROM_SCREEN_SHARE: return truthy(raw);
 
         case LAYER_RULE_EFFECT_ORDER: {
             auto parsed = parseInt(EFFECT_NAME, raw);

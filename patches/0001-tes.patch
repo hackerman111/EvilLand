@@ -1,0 +1,1843 @@
+From 5102eabd4b0f0299751243d5b81e1f54fd32a25c Mon Sep 17 00:00:00 2001
+From: papayka_notebook <vladislav.dokuchaev2016@gmail.com>
+Date: Tue, 6 Oct 2026 21:06:04 +0300
+Subject: [PATCH 1/2] tes
+
+---
+ docs/private-screen-share.md                  |  46 ++++++
+ hyprtester/CMakeLists.txt                     |   3 +-
+ hyprtester/clients/toplevel-capture.cpp       | 102 ++++++++++++-
+ .../src/tests/clients/toplevel-capture.cpp    |  84 ++++++++++-
+ .../lua/bindings/LuaBindingsConfigRules.cpp   |   1 +
+ .../lua/bindings/LuaBindingsInternal.hpp      |   1 +
+ src/config/shared/actions/ConfigActions.cpp   |   2 +
+ src/debug/Overlay.cpp                         |   3 +
+ src/desktop/rule/layerRule/LayerRule.cpp      |   3 +-
+ .../rule/layerRule/LayerRuleApplicator.cpp    |  10 +-
+ .../rule/layerRule/LayerRuleApplicator.hpp    |   1 +
+ .../layerRule/LayerRuleEffectContainer.cpp    |   3 +-
+ .../layerRule/LayerRuleEffectContainer.hpp    |   3 +-
+ src/desktop/rule/windowRule/WindowRule.cpp    |   1 +
+ .../rule/windowRule/WindowRuleApplicator.cpp  |  56 +++----
+ .../rule/windowRule/WindowRuleApplicator.hpp  |   1 +
+ .../windowRule/WindowRuleEffectContainer.cpp  |   3 +-
+ .../windowRule/WindowRuleEffectContainer.hpp  |   1 +
+ src/desktop/state/Fadeout.cpp                 |   7 +
+ src/desktop/state/Fadeout.hpp                 |   4 +
+ src/desktop/state/LayerFadeout.cpp            |  12 +-
+ src/desktop/state/PopupFadeout.cpp            |  13 +-
+ src/desktop/state/WindowFadeout.cpp           |  16 +-
+ .../view/window/WindowPresentation.cpp        |   4 +
+ .../view/window/WindowPresentation.hpp        |   1 +
+ src/errorOverlay/Overlay.cpp                  |  20 +--
+ src/ipc/s1/Commands.cpp                       |   2 +
+ src/managers/screenshare/ScreenshareFrame.cpp | 141 +++++++++++++++---
+ .../screenshare/ScreenshareManager.hpp        |  39 ++---
+ src/notification/NotificationOverlay.cpp      |   8 +-
+ src/protocols/core/DataDevice.cpp             |   7 +
+ src/render/Context.cpp                        |   1 +
+ src/render/Context.hpp                        |   1 +
+ src/render/ElementRenderer.cpp                |   7 +-
+ src/render/Renderer.cpp                       | 100 ++++++++++---
+ src/render/Renderer.hpp                       |   5 +-
+ src/render/ScreenShare.cpp                    |  38 +++++
+ src/render/ScreenShare.hpp                    |   9 ++
+ src/render/WindowRenderPresentation.cpp       |   7 +
+ src/render/WindowRenderPresentation.hpp       |   1 +
+ src/render/pass/SurfacePassElement.cpp        |   4 +-
+ tests/desktop/rule/ScreenShare.cpp            |  39 +++++
+ tests/render/Context.cpp                      |   2 +
+ tests/render/WindowRenderPresentation.cpp     |  34 +++++
+ 44 files changed, 716 insertions(+), 130 deletions(-)
+ create mode 100644 docs/private-screen-share.md
+ create mode 100644 src/render/ScreenShare.cpp
+ create mode 100644 src/render/ScreenShare.hpp
+ create mode 100644 tests/desktop/rule/ScreenShare.cpp
+
+diff --git a/docs/private-screen-share.md b/docs/private-screen-share.md
+new file mode 100644
+index 00000000..ad7f0544
+--- /dev/null
++++ b/docs/private-screen-share.md
+@@ -0,0 +1,46 @@
++# Private surfaces in monitor captures
++
++`hide_from_screen_share` is a boolean window and layer rule, disabled by default.
++It excludes the surface, its decorations, subsurfaces, popups, and closing animation
++from compositor screen captures. The capture shows the background and other windows
++behind it. Local display, focus, input, layout, and movement continue normally.
++
++This option requires running Hyprland built with this patch. Building the source
++does not update or restart an existing compositor session.
++
++Add a rule to `hyprland.lua`:
++
++```lua
++hl.window_rule({
++    name = "private-terminal",
++    match = { class = "^private-terminal$" },
++    float = true,
++    hide_from_screen_share = true,
++})
++
++hl.layer_rule({
++    name = "private-overlay",
++    match = { namespace = "^private-overlay$" },
++    hide_from_screen_share = true,
++})
++```
++
++For example, launch the terminal with `kitty --class private-terminal`.
++OBS should capture the monitor through the Wayland/PipeWire screen capture source.
++The rule applies to Hyprland's screencopy and image copy capture paths, including
++captures of monitor regions. Capturing a protected window directly is denied.
++
++The existing `no_screen_share` rule continues to draw a black rectangle.
++When both rules are enabled, `hide_from_screen_share` takes precedence.
++
++The capture scene is rendered separately only when a private surface or its closing
++animation is present on the captured monitor. This costs an additional scene render
++per captured frame. Separate blur resources prevent private pixels in the displayed
++scene from appearing through other captured surfaces' blur.
++
++Tiled windows still occupy their layout space, and layer surfaces still reserve their
++exclusive zones. Use floating windows or layers without an exclusive zone for an
++overlay that leaves the captured desktop layout intact. The shared cursor retains
++the capture client's normal cursor settings.
++
++For an upstream contribution, this new option also needs a separate Hyprland wiki PR.
+diff --git a/hyprtester/CMakeLists.txt b/hyprtester/CMakeLists.txt
+index 59110ed9..a7c739c6 100644
+--- a/hyprtester/CMakeLists.txt
++++ b/hyprtester/CMakeLists.txt
+@@ -108,6 +108,7 @@ protocolnew("staging/xdg-activation" "xdg-activation-v1" false)
+ protocolnew("unstable/keyboard-shortcuts-inhibit" "keyboard-shortcuts-inhibit-unstable-v1" false)
+ protocolnew("../protocols" "wlr-foreign-toplevel-management-unstable-v1" true)
+ protocolnew("${HYPRLAND_PROTOCOLS}/protocols" "hyprland-toplevel-export-v1" true)
++protocolnew("../protocols" "wlr-screencopy-unstable-v1" true)
+ 
+ clientNew("pointer-warp" PROTOS "pointer-warp-v1" "xdg-shell")
+ clientNew("surface-scale-transform" PROTOS "fractional-scale-v1" "xdg-shell")
+@@ -121,4 +122,4 @@ clientNew("fullscreen-with-monitor" PROTOS "xdg-shell")
+ clientNew("xdg-initial-maximize" PROTOS "xdg-shell")
+ clientNew("popup-render" PROTOS "xdg-shell")
+ clientNew("wlr-foreign-toplevel" PROTOS "wlr-foreign-toplevel-management-unstable-v1")
+-clientNew("toplevel-capture" PROTOS "wlr-foreign-toplevel-management-unstable-v1" "hyprland-toplevel-export-v1")
++clientNew("toplevel-capture" PROTOS "wlr-foreign-toplevel-management-unstable-v1" "hyprland-toplevel-export-v1" "wlr-screencopy-unstable-v1")
+diff --git a/hyprtester/clients/toplevel-capture.cpp b/hyprtester/clients/toplevel-capture.cpp
+index 81785036..731992a3 100644
+--- a/hyprtester/clients/toplevel-capture.cpp
++++ b/hyprtester/clients/toplevel-capture.cpp
+@@ -16,9 +16,11 @@
+ #include <wayland.hpp>
+ #include <wlr-foreign-toplevel-management-unstable-v1.hpp>
+ #include <hyprland-toplevel-export-v1.hpp>
++#include <wlr-screencopy-unstable-v1.hpp>
+ 
+ #include <hyprutils/memory/Casts.hpp>
+ #include <hyprutils/memory/SharedPtr.hpp>
++#include <hyprutils/memory/WeakPtr.hpp>
+ 
+ using namespace Hyprutils::Memory;
+ 
+@@ -35,12 +37,17 @@ struct SState {
+     CSharedPointer<CCWlShm>                           shm;
+     CSharedPointer<CCZwlrForeignToplevelManagerV1>    toplevelMgr;
+     CSharedPointer<CCHyprlandToplevelExportManagerV1> exportMgr;
++    CSharedPointer<CCZwlrScreencopyManagerV1>         screencopyMgr;
++    std::vector<CSharedPointer<CCWlOutput>>           outputs;
++    CSharedPointer<CCWlOutput>                        monitor;
++    std::string                                       monitorName;
+ 
+     std::vector<CSharedPointer<SHandle>>              handles;
+     CSharedPointer<CCZwlrForeignToplevelHandleV1>     target;
+     std::string                                       targetAppID;
+ 
+     CSharedPointer<CCHyprlandToplevelExportFrameV1>   frame;
++    CSharedPointer<CCZwlrScreencopyFrameV1>           monitorFrame;
+     CSharedPointer<CCWlShmPool>                       pool;
+     CSharedPointer<CCWlBuffer>                        buffer;
+     int                                               bufferFD = -1;
+@@ -67,6 +74,19 @@ static bool bindGlobals(SState& state) {
+         if (IFACE == "wl_shm") {
+             state.shm = makeShared<CCWlShm>(rc<wl_proxy*>(wl_registry_bind(rc<wl_registry*>(r->resource()), name, &wl_shm_interface, 1)));
+ 
++        } else if (IFACE == "zwlr_screencopy_manager_v1") {
++            state.screencopyMgr = makeShared<CCZwlrScreencopyManagerV1>(
++                rc<wl_proxy*>(wl_registry_bind(rc<wl_registry*>(r->resource()), name, &zwlr_screencopy_manager_v1_interface, std::min(ver, 3U))));
++
++        } else if (IFACE == "wl_output" && ver >= 4) {
++            const auto                     OUTPUT = makeShared<CCWlOutput>(rc<wl_proxy*>(wl_registry_bind(rc<wl_registry*>(r->resource()), name, &wl_output_interface, 4)));
++            const CWeakPointer<CCWlOutput> WEAK   = OUTPUT;
++            OUTPUT->setName([&state, WEAK](CCWlOutput*, const char* outputName) {
++                if (state.monitorName == outputName)
++                    state.monitor = WEAK.lock();
++            });
++            state.outputs.emplace_back(OUTPUT);
++
+         } else if (IFACE == "zwlr_foreign_toplevel_manager_v1") {
+             state.toplevelMgr = makeShared<CCZwlrForeignToplevelManagerV1>(
+                 rc<wl_proxy*>(wl_registry_bind(rc<wl_registry*>(r->resource()), name, &zwlr_foreign_toplevel_manager_v1_interface, std::min(ver, 3U))));
+@@ -98,9 +118,67 @@ static bool bindGlobals(SState& state) {
+     if (wl_display_roundtrip(state.display) < 0)
+         return false;
+ 
++    if (!state.monitorName.empty())
++        return state.shm && state.screencopyMgr;
+     return state.shm && state.toplevelMgr && state.exportMgr;
+ }
+ 
++static bool requestMonitorCapture(SState& state) {
++    for (size_t i = 0; i < 3 && !state.monitor; ++i) {
++        if (wl_display_roundtrip(state.display) < 0)
++            return false;
++    }
++    if (!state.monitor)
++        return false;
++
++    state.monitorFrame = makeShared<CCZwlrScreencopyFrameV1>(state.screencopyMgr->sendCaptureOutput(0, rc<wl_proxy*>(state.monitor->resource())));
++    state.monitorFrame->setBuffer([&state](CCZwlrScreencopyFrameV1*, uint32_t fmt, uint32_t w, uint32_t h, uint32_t stride) {
++        state.bufferFormat = fmt;
++        state.bufferWidth  = w;
++        state.bufferHeight = h;
++        state.bufferStride = stride;
++    });
++    state.monitorFrame->setReady([&state](CCZwlrScreencopyFrameV1*, uint32_t, uint32_t, uint32_t) {
++        state.frameReceived = true;
++        state.shouldExit    = true;
++    });
++    state.monitorFrame->setFailed([&state](CCZwlrScreencopyFrameV1*) { state.shouldExit = true; });
++    state.monitorFrame->setFlags([](CCZwlrScreencopyFrameV1*, uint32_t) {});
++    state.monitorFrame->setDamage([](CCZwlrScreencopyFrameV1*, uint32_t, uint32_t, uint32_t, uint32_t) {});
++    state.monitorFrame->setLinuxDmabuf([](CCZwlrScreencopyFrameV1*, uint32_t, uint32_t, uint32_t) {});
++    state.monitorFrame->setBufferDone([&state](CCZwlrScreencopyFrameV1*) {
++        if (!createCaptureBuffer(state)) {
++            state.shouldExit = true;
++            return;
++        }
++        state.monitorFrame->sendCopy(rc<wl_proxy*>(state.buffer->resource()));
++    });
++    return true;
++}
++
++static bool printMonitorChecksum(const SState& state) {
++    const size_t SIZE = sc<size_t>(state.bufferStride) * state.bufferHeight;
++    if (state.bufferStride < state.bufferWidth * sizeof(uint32_t))
++        return false;
++
++    const auto DATA = mmap(nullptr, SIZE, PROT_READ, MAP_SHARED, state.bufferFD, 0);
++    if (DATA == MAP_FAILED)
++        return false;
++
++    uint64_t hash = 14695981039346656037ULL;
++    for (uint32_t y = 0; y < state.bufferHeight; ++y) {
++        const auto ROW = rc<const uint32_t*>(rc<const uint8_t*>(DATA) + sc<size_t>(y) * state.bufferStride);
++        for (uint32_t x = 0; x < state.bufferWidth; ++x) {
++            // Ignore alpha and row padding, which XRGB captures do not define.
++            hash ^= ROW[x] & 0xFFFFFFU;
++            hash *= 1099511628211ULL;
++        }
++    }
++    munmap(DATA, SIZE);
++    std::println("{}x{}:{}", state.bufferWidth, state.bufferHeight, hash);
++    return true;
++}
++
+ static bool findTarget(SState& state) {
+     for (size_t i = 0; i < 3 && !state.target; ++i) {
+         if (wl_display_roundtrip(state.display) < 0)
+@@ -218,12 +296,16 @@ static void disconnect(SState& state) {
+         return;
+ 
+     state.frame.reset();
++    state.monitorFrame.reset();
+     state.buffer.reset();
+     state.pool.reset();
+     state.target.reset();
+     state.handles.clear();
+     state.toplevelMgr.reset();
+     state.exportMgr.reset();
++    state.screencopyMgr.reset();
++    state.monitor.reset();
++    state.outputs.clear();
+     state.shm.reset();
+     state.registry.reset();
+ 
+@@ -236,14 +318,18 @@ static void disconnect(SState& state) {
+ }
+ 
+ int main(int argc, char** argv) {
+-    if (argc != 2) {
+-        std::println(stderr, "usage: toplevel-capture <app-id>");
++    const bool MONITOR_CAPTURE = argc == 3 && std::string_view{argv[1]} == "--monitor";
++    if (argc != 2 && !MONITOR_CAPTURE) {
++        std::println(stderr, "usage: toplevel-capture <app-id> | --monitor <output-name>");
+         return 1;
+     }
+ 
+     SState state;
+-    state.targetAppID = argv[1];
+-    state.display     = wl_display_connect(nullptr);
++    if (MONITOR_CAPTURE)
++        state.monitorName = argv[2];
++    else
++        state.targetAppID = argv[1];
++    state.display = wl_display_connect(nullptr);
+     if (!state.display) {
+         std::println(stderr, "failed to connect to Wayland display");
+         return 1;
+@@ -255,13 +341,13 @@ int main(int argc, char** argv) {
+         return 1;
+     }
+ 
+-    if (!findTarget(state)) {
++    if (!MONITOR_CAPTURE && !findTarget(state)) {
+         std::println(stderr, "no foreign toplevel found for app ID '{}'", state.targetAppID);
+         disconnect(state);
+         return 1;
+     }
+ 
+-    if (!requestCapture(state)) {
++    if (MONITOR_CAPTURE ? !requestMonitorCapture(state) : !requestCapture(state)) {
+         std::println(stderr, "failed to request toplevel capture");
+         disconnect(state);
+         return 1;
+@@ -273,7 +359,7 @@ int main(int argc, char** argv) {
+     if (!state.frameReceived)
+         std::println(stderr, "did not receive a captured frame");
+ 
+-    const bool RESULT = state.frameReceived;
++    const bool RESULT = state.frameReceived && (!MONITOR_CAPTURE || printMonitorChecksum(state));
+     disconnect(state);
+     return RESULT ? 0 : 1;
+-}
+\ No newline at end of file
++}
+diff --git a/hyprtester/src/tests/clients/toplevel-capture.cpp b/hyprtester/src/tests/clients/toplevel-capture.cpp
+index 5fef012a..0ee1b638 100644
+--- a/hyprtester/src/tests/clients/toplevel-capture.cpp
++++ b/hyprtester/src/tests/clients/toplevel-capture.cpp
+@@ -5,6 +5,7 @@
+ #include "tests.hpp"
+ 
+ #include <format>
++#include <optional>
+ #include <string>
+ 
+ #include <hyprutils/os/Process.hpp>
+@@ -29,6 +30,87 @@ static bool runToplevelCapture(const std::string& appID) {
+     return false;
+ }
+ 
++static std::optional<std::string> monitorChecksum() {
++    CProcess process(std::format("{}/toplevel-capture", binaryDir), {"--monitor", "HEADLESS-1"});
++    process.addEnv("WAYLAND_DISPLAY", WLDISPLAY);
++    if (!process.runSync() || process.exitCode() != 0 || process.stdOut().empty())
++        return std::nullopt;
++    return process.stdOut();
++}
++
++SUBTEST(privateMonitorWindow, bool fullscreen) {
++    CScopeGuard cleanup([&] {
++        Tests::killAllWindows();
++        Tests::killAllLayers();
++        getFromSocket("/reload");
++    });
++    ASSERT(Tests::killAllWindows(), true);
++    ASSERT(Tests::killAllLayers(), true);
++    OK(getFromSocket("/eval hl.config({ animations = { enabled = false }, ecosystem = { enforce_permissions = false } })"));
++    OK(getFromSocket("/dispatch hl.dsp.focus({ monitor = 'HEADLESS-1' })"));
++    OK(getFromSocket("/eval hl.window_rule({ name = 'private-monitor-window', match = { class = '^private-monitor-window$' }, "
++                     "float = true, hide_from_screen_share = true })"));
++
++    auto background = Tests::spawnLayerKitty("capture-background", {"--edge", "background", "--output-name", "HEADLESS-1", "--override", "background=#0044cc", "sleep", "60"});
++    ASSERT(sc<bool>(background), true);
++    const auto BASELINE = monitorChecksum();
++    ASSERT(BASELINE.has_value(), true);
++    auto kitty = Tests::spawnKitty("private-monitor-window", {"--override", "background=#ff0000"});
++    ASSERT(sc<bool>(kitty), true);
++    EXPECT_CONTAINS(getFromSocket("/activewindow"), "class: private-monitor-window");
++    if (fullscreen)
++        OK(getFromSocket("/dispatch hl.dsp.window.fullscreen({ mode = 'fullscreen', action = 'set' })"));
++
++    EXPECT(monitorChecksum() == BASELINE, true);
++    OK(getFromSocket("/dispatch hl.dsp.window.set_prop({ window = 'class:private-monitor-window', prop = 'hide_from_screen_share', value = 'off' })"));
++    const auto VISIBLE = monitorChecksum();
++    ASSERT(VISIBLE.has_value(), true);
++    ASSERT(VISIBLE != BASELINE, true);
++    OK(getFromSocket("/dispatch hl.dsp.window.set_prop({ window = 'class:private-monitor-window', prop = 'hide_from_screen_share', value = 'on' })"));
++    EXPECT(monitorChecksum() == BASELINE, true);
++    OK(getFromSocket("/dispatch hl.dsp.window.set_prop({ window = 'class:private-monitor-window', prop = 'no_screen_share', value = 'on' })"));
++    EXPECT(monitorChecksum() == BASELINE, true);
++    OK(getFromSocket("/dispatch hl.dsp.window.set_prop({ window = 'class:private-monitor-window', prop = 'hide_from_screen_share', value = 'off' })"));
++    const auto MASKED = monitorChecksum();
++    ASSERT(MASKED.has_value(), true);
++    EXPECT(MASKED != BASELINE, true);
++    EXPECT(MASKED != VISIBLE, true);
++}
++
++TEST_CASE(monitorCaptureOmitsPrivateWindow) {
++    CALL_SUBTEST(privateMonitorWindow, false);
++}
++
++TEST_CASE(monitorCaptureOmitsPrivateFullscreenWindow) {
++    CALL_SUBTEST(privateMonitorWindow, true);
++}
++
++TEST_CASE(monitorCaptureOmitsPrivateLayer) {
++    CScopeGuard cleanup([&] {
++        Tests::killAllLayers();
++        getFromSocket("/reload");
++    });
++    ASSERT(Tests::killAllWindows(), true);
++    ASSERT(Tests::killAllLayers(), true);
++    OK(getFromSocket("/eval hl.config({ animations = { enabled = false }, ecosystem = { enforce_permissions = false } })"));
++    OK(getFromSocket("/dispatch hl.dsp.focus({ monitor = 'HEADLESS-1' })"));
++    OK(getFromSocket("/eval hl.layer_rule({ name = 'private-monitor-layer', match = { namespace = '^private-monitor-layer$' }, hide_from_screen_share = true })"));
++
++    auto background = Tests::spawnLayerKitty("capture-background", {"--edge", "background", "--output-name", "HEADLESS-1", "--override", "background=#0044cc", "sleep", "60"});
++    ASSERT(sc<bool>(background), true);
++    const auto BASELINE = monitorChecksum();
++    ASSERT(BASELINE.has_value(), true);
++    auto kitty = Tests::spawnLayerKitty("private-monitor-layer",
++                                        {"--edge", "center", "--layer", "overlay", "--exclusive-zone", "0", "--output-name", "HEADLESS-1", "--override", "background=#ff0000"});
++    ASSERT(sc<bool>(kitty), true);
++    EXPECT(monitorChecksum() == BASELINE, true);
++
++    OK(getFromSocket("/eval hl.layer_rule({ name = 'private-monitor-layer', match = { namespace = '^private-monitor-layer$' }, hide_from_screen_share = false })"));
++    const auto VISIBLE = monitorChecksum();
++    ASSERT(VISIBLE.has_value(), true);
++    ASSERT(VISIBLE != BASELINE, true);
++}
++
+ TEST_CASE(windowShareCaptureProducesFrame) {
+     constexpr auto APP_ID = "hyprtester-toplevel-capture";
+ 
+@@ -41,4 +123,4 @@ TEST_CASE(windowShareCaptureProducesFrame) {
+     ASSERT(Tests::windowCount(), 1);
+ 
+     ASSERT(runToplevelCapture(APP_ID), true);
+-}
+\ No newline at end of file
++}
+diff --git a/src/config/lua/bindings/LuaBindingsConfigRules.cpp b/src/config/lua/bindings/LuaBindingsConfigRules.cpp
+index cc6108ff..090b9aa0 100644
+--- a/src/config/lua/bindings/LuaBindingsConfigRules.cpp
++++ b/src/config/lua/bindings/LuaBindingsConfigRules.cpp
+@@ -190,6 +190,7 @@ namespace {
+         {"order", []() -> ILuaConfigValue* { return new CLuaConfigInt(0); }, LE::LAYER_RULE_EFFECT_ORDER},
+         {"above_lock", []() -> ILuaConfigValue* { return new CLuaConfigInt(0, 0, 2); }, LE::LAYER_RULE_EFFECT_ABOVE_LOCK},
+         {"no_screen_share", []() -> ILuaConfigValue* { return new CLuaConfigBool(false); }, LE::LAYER_RULE_EFFECT_NO_SCREEN_SHARE},
++        {"hide_from_screen_share", []() -> ILuaConfigValue* { return new CLuaConfigBool(false); }, LE::LAYER_RULE_EFFECT_HIDE_FROM_SCREEN_SHARE},
+     };
+ 
+     static_assert(sizeof(LAYER_RULE_EFFECT_DESCS) / sizeof(SLayerRuleEffectDesc) == LE::LAYER_RULE_EFFECT_LAST_STATIC - 1);
+diff --git a/src/config/lua/bindings/LuaBindingsInternal.hpp b/src/config/lua/bindings/LuaBindingsInternal.hpp
+index 1841ec99..296257a8 100644
+--- a/src/config/lua/bindings/LuaBindingsInternal.hpp
++++ b/src/config/lua/bindings/LuaBindingsInternal.hpp
+@@ -101,6 +101,7 @@ namespace Config::Lua::Bindings::Internal {
+         {"xray", []() -> ILuaConfigValue* { return new CLuaConfigBool(false); }, WE::WINDOW_RULE_EFFECT_XRAY},
+         {"render_unfocused", []() -> ILuaConfigValue* { return new CLuaConfigBool(false); }, WE::WINDOW_RULE_EFFECT_RENDER_UNFOCUSED},
+         {"no_screen_share", []() -> ILuaConfigValue* { return new CLuaConfigBool(false); }, WE::WINDOW_RULE_EFFECT_NO_SCREEN_SHARE},
++        {"hide_from_screen_share", []() -> ILuaConfigValue* { return new CLuaConfigBool(false); }, WE::WINDOW_RULE_EFFECT_HIDE_FROM_SCREEN_SHARE},
+         {"no_vrr", []() -> ILuaConfigValue* { return new CLuaConfigBool(false); }, WE::WINDOW_RULE_EFFECT_NO_VRR},
+         {"no_auto_hdr", []() -> ILuaConfigValue* { return new CLuaConfigBool(false); }, WE::WINDOW_RULE_EFFECT_NO_AUTO_HDR},
+         {"stay_focused", []() -> ILuaConfigValue* { return new CLuaConfigBool(false); }, WE::WINDOW_RULE_EFFECT_STAY_FOCUSED},
+diff --git a/src/config/shared/actions/ConfigActions.cpp b/src/config/shared/actions/ConfigActions.cpp
+index 3aecbf96..4ad0007f 100644
+--- a/src/config/shared/actions/ConfigActions.cpp
++++ b/src/config/shared/actions/ConfigActions.cpp
+@@ -920,6 +920,8 @@ ActionResult Actions::setProp(const std::string& PROP, const std::string& VAL, s
+             parsePropTrivial(PWINDOW->m_ruleApplicator->noFollowMouse(), VAL);
+         else if (PROP == "no_screen_share")
+             parsePropTrivial(PWINDOW->m_ruleApplicator->noScreenShare(), VAL);
++        else if (PROP == "hide_from_screen_share")
++            parsePropTrivial(PWINDOW->m_ruleApplicator->hideFromScreenShare(), VAL);
+         else if (PROP == "no_vrr")
+             parsePropTrivial(PWINDOW->m_ruleApplicator->noVRR(), VAL);
+         else if (PROP == "no_auto_hdr")
+diff --git a/src/debug/Overlay.cpp b/src/debug/Overlay.cpp
+index 904bbe6b..ca775259 100644
+--- a/src/debug/Overlay.cpp
++++ b/src/debug/Overlay.cpp
+@@ -487,6 +487,9 @@ void COverlay::draw(Render::CRenderContext& ctx) {
+     if (haveAnyBox)
+         newDrawnBox = {sc<int>(PMONITOR->m_position.x) + minX, sc<int>(PMONITOR->m_position.y) + minY, maxX - minX, maxY - minY};
+ 
++    if (ctx.readOnlyEffects())
++        return;
++
+     if (cacheUpdated || newDrawnBox != m_lastDrawnBox) {
+         if (m_lastDrawnBox.width > 0 && m_lastDrawnBox.height > 0)
+             g_pHyprRenderer->damageBox(m_lastDrawnBox);
+diff --git a/src/desktop/rule/layerRule/LayerRule.cpp b/src/desktop/rule/layerRule/LayerRule.cpp
+index fc571c1c..e52d2df5 100644
+--- a/src/desktop/rule/layerRule/LayerRule.cpp
++++ b/src/desktop/rule/layerRule/LayerRule.cpp
+@@ -61,7 +61,8 @@ static std::expected<LayerRuleEffectValue, std::string> parseLayerRuleEffect(CLa
+         case LAYER_RULE_EFFECT_BLUR_POPUPS:
+         case LAYER_RULE_EFFECT_DIM_AROUND:
+         case LAYER_RULE_EFFECT_XRAY:
+-        case LAYER_RULE_EFFECT_NO_SCREEN_SHARE: return truthy(raw);
++        case LAYER_RULE_EFFECT_NO_SCREEN_SHARE:
++        case LAYER_RULE_EFFECT_HIDE_FROM_SCREEN_SHARE: return truthy(raw);
+ 
+         case LAYER_RULE_EFFECT_ORDER: {
+             auto parsed = parseInt(EFFECT_NAME, raw);
+diff --git a/src/desktop/rule/layerRule/LayerRuleApplicator.cpp b/src/desktop/rule/layerRule/LayerRuleApplicator.cpp
+index 6a1007a1..0ebd95e0 100644
+--- a/src/desktop/rule/layerRule/LayerRuleApplicator.cpp
++++ b/src/desktop/rule/layerRule/LayerRuleApplicator.cpp
+@@ -30,8 +30,9 @@ CLayerRuleApplicator::CLayerRuleApplicator(PHLLS ls) : m_ls(ls) {
+ }
+ 
+ void CLayerRuleApplicator::resetProps(std::underlying_type_t<eRuleProperty> props, Types::eOverridePriority prio) {
+-    std::apply([&](auto&... prop) { (resetRuleProp(prop, props, prio), ...); },
+-               std::forward_as_tuple(m_noanim, m_blur, m_blurPopups, m_dimAround, m_xray, m_noScreenShare, m_order, m_aboveLock, m_ignoreAlpha, m_animationStyle));
++    std::apply(
++        [&](auto&... prop) { (resetRuleProp(prop, props, prio), ...); },
++        std::forward_as_tuple(m_noanim, m_blur, m_blurPopups, m_dimAround, m_xray, m_noScreenShare, m_hideFromScreenShare, m_order, m_aboveLock, m_ignoreAlpha, m_animationStyle));
+ 
+     if (prio == Types::PRIORITY_WINDOW_RULE)
+         std::erase_if(m_otherProps.props, [props](const auto& el) { return !el.second || el.second->propMask & props; });
+@@ -100,6 +101,11 @@ void CLayerRuleApplicator::applyDynamicRule(const SP<CLayerRule>& rule) {
+                 m_noScreenShare.second |= rule->getPropertiesMask();
+                 break;
+             }
++            case LAYER_RULE_EFFECT_HIDE_FROM_SCREEN_SHARE: {
++                m_hideFromScreenShare.first.set(std::get<bool>(value), Types::PRIORITY_WINDOW_RULE);
++                m_hideFromScreenShare.second |= rule->getPropertiesMask();
++                break;
++            }
+             case LAYER_RULE_EFFECT_ORDER: {
+                 m_order.first.set(std::get<int64_t>(value), Types::PRIORITY_WINDOW_RULE);
+                 m_order.second |= rule->getPropertiesMask();
+diff --git a/src/desktop/rule/layerRule/LayerRuleApplicator.hpp b/src/desktop/rule/layerRule/LayerRuleApplicator.hpp
+index b208aac6..6166d45b 100644
+--- a/src/desktop/rule/layerRule/LayerRuleApplicator.hpp
++++ b/src/desktop/rule/layerRule/LayerRuleApplicator.hpp
+@@ -53,6 +53,7 @@ namespace Desktop::Rule {
+         DEFINE_PROP(bool, dimAround, false)
+         DEFINE_PROP(bool, xray, false)
+         DEFINE_PROP(bool, noScreenShare, false)
++        DEFINE_PROP(bool, hideFromScreenShare, false)
+ 
+         DEFINE_PROP(Config::INTEGER, order, 0)
+         DEFINE_PROP(Config::INTEGER, aboveLock, 0)
+diff --git a/src/desktop/rule/layerRule/LayerRuleEffectContainer.cpp b/src/desktop/rule/layerRule/LayerRuleEffectContainer.cpp
+index 17394239..9bf527da 100644
+--- a/src/desktop/rule/layerRule/LayerRuleEffectContainer.cpp
++++ b/src/desktop/rule/layerRule/LayerRuleEffectContainer.cpp
+@@ -21,12 +21,13 @@ static const std::vector<std::string> EFFECT_STRINGS = {
+     "order",                  //
+     "above_lock",             //
+     "no_screen_share",        //
++    "hide_from_screen_share", //
+     "__internal_last_static", //
+ };
+ 
+ // This is here so that if we change the rules, we get reminded to update
+ // the strings.
+-static_assert(LAYER_RULE_EFFECT_LAST_STATIC == 11);
++static_assert(LAYER_RULE_EFFECT_LAST_STATIC == 12);
+ 
+ CLayerRuleEffectContainer::CLayerRuleEffectContainer() : IEffectContainer<eLayerRuleEffect>(std::vector<std::string>{EFFECT_STRINGS}) {
+     ;
+diff --git a/src/desktop/rule/layerRule/LayerRuleEffectContainer.hpp b/src/desktop/rule/layerRule/LayerRuleEffectContainer.hpp
+index e3b3d26c..8cb96205 100644
+--- a/src/desktop/rule/layerRule/LayerRuleEffectContainer.hpp
++++ b/src/desktop/rule/layerRule/LayerRuleEffectContainer.hpp
+@@ -19,6 +19,7 @@ namespace Desktop::Rule {
+         LAYER_RULE_EFFECT_ORDER,
+         LAYER_RULE_EFFECT_ABOVE_LOCK,
+         LAYER_RULE_EFFECT_NO_SCREEN_SHARE,
++        LAYER_RULE_EFFECT_HIDE_FROM_SCREEN_SHARE,
+ 
+         LAYER_RULE_EFFECT_LAST_STATIC,
+     };
+@@ -30,4 +31,4 @@ namespace Desktop::Rule {
+     };
+ 
+     SP<CLayerRuleEffectContainer> layerEffects();
+-};
+\ No newline at end of file
++};
+diff --git a/src/desktop/rule/windowRule/WindowRule.cpp b/src/desktop/rule/windowRule/WindowRule.cpp
+index 805d407b..ef437bb5 100644
+--- a/src/desktop/rule/windowRule/WindowRule.cpp
++++ b/src/desktop/rule/windowRule/WindowRule.cpp
+@@ -257,6 +257,7 @@ static std::expected<WindowRuleEffectValue, std::string> parseWindowRuleEffect(C
+         case WINDOW_RULE_EFFECT_XRAY:
+         case WINDOW_RULE_EFFECT_RENDER_UNFOCUSED:
+         case WINDOW_RULE_EFFECT_NO_SCREEN_SHARE:
++        case WINDOW_RULE_EFFECT_HIDE_FROM_SCREEN_SHARE:
+         case WINDOW_RULE_EFFECT_NO_VRR:
+         case WINDOW_RULE_EFFECT_NO_AUTO_HDR:
+         case WINDOW_RULE_EFFECT_CONFINE_POINTER:
+diff --git a/src/desktop/rule/windowRule/WindowRuleApplicator.cpp b/src/desktop/rule/windowRule/WindowRuleApplicator.cpp
+index 18926de2..12a03ccc 100644
+--- a/src/desktop/rule/windowRule/WindowRuleApplicator.cpp
++++ b/src/desktop/rule/windowRule/WindowRuleApplicator.cpp
+@@ -39,31 +39,32 @@ CWindowRuleApplicator::CWindowRuleApplicator(PHLWINDOW w) : m_window(w) {
+ std::unordered_set<CWindowRuleEffectContainer::storageType> CWindowRuleApplicator::resetProps(std::underlying_type_t<eRuleProperty> props, Types::eOverridePriority prio) {
+     std::unordered_set<CWindowRuleEffectContainer::storageType> effectsNuked;
+ 
+-    std::apply(
+-        [&](auto&&... prop) { (resetRuleProp(prop.first.get(), props, prio, effectsNuked, prop.second), ...); },
+-        std::make_tuple(
+-            std::pair{std::ref(m_alpha), [this] { return alphaEffect(); }}, std::pair{std::ref(m_alphaInactive), [this] { return alphaInactiveEffect(); }},
+-            std::pair{std::ref(m_alphaFullscreen), [this] { return alphaFullscreenEffect(); }}, std::pair{std::ref(m_allowsInput), [this] { return allowsInputEffect(); }},
+-            std::pair{std::ref(m_decorate), [this] { return decorateEffect(); }}, std::pair{std::ref(m_focusOnActivate), [this] { return focusOnActivateEffect(); }},
+-            std::pair{std::ref(m_keepAspectRatio), [this] { return keepAspectRatioEffect(); }}, std::pair{std::ref(m_nearestNeighbor), [this] { return nearestNeighborEffect(); }},
+-            std::pair{std::ref(m_noAnim), [this] { return noAnimEffect(); }}, std::pair{std::ref(m_noBlur), [this] { return noBlurEffect(); }},
+-            std::pair{std::ref(m_noDim), [this] { return noDimEffect(); }}, std::pair{std::ref(m_noFocus), [this] { return noFocusEffect(); }},
+-            std::pair{std::ref(m_noMaxSize), [this] { return noMaxSizeEffect(); }}, std::pair{std::ref(m_noShadow), [this] { return noShadowEffect(); }},
+-            std::pair{std::ref(m_noGlow), [this] { return noGlowEffect(); }}, std::pair{std::ref(m_noWobble), [this] { return noWobbleEffect(); }},
+-            std::pair{std::ref(m_noShortcutsInhibit), [this] { return noShortcutsInhibitEffect(); }}, std::pair{std::ref(m_opaque), [this] { return opaqueEffect(); }},
+-            std::pair{std::ref(m_dimAround), [this] { return dimAroundEffect(); }}, std::pair{std::ref(m_RGBX), [this] { return RGBXEffect(); }},
+-            std::pair{std::ref(m_syncFullscreen), [this] { return syncFullscreenEffect(); }}, std::pair{std::ref(m_tearing), [this] { return tearingEffect(); }},
+-            std::pair{std::ref(m_xray), [this] { return xrayEffect(); }}, std::pair{std::ref(m_renderUnfocused), [this] { return renderUnfocusedEffect(); }},
+-            std::pair{std::ref(m_noFollowMouse), [this] { return noFollowMouseEffect(); }}, std::pair{std::ref(m_noScreenShare), [this] { return noScreenShareEffect(); }},
+-            std::pair{std::ref(m_noVRR), [this] { return noVRREffect(); }}, std::pair{std::ref(m_noAutoHDR), [this] { return noAutoHDREffect(); }},
+-            std::pair{std::ref(m_persistentSize), [this] { return persistentSizeEffect(); }}, std::pair{std::ref(m_stayFocused), [this] { return stayFocusedEffect(); }},
+-            std::pair{std::ref(m_idleInhibitMode), [this] { return idleInhibitModeEffect(); }}, std::pair{std::ref(m_confinePointer), [this] { return confinePointerEffect(); }},
+-            std::pair{std::ref(m_noXdgDrags), [this] { return noXdgDragsEffect(); }}, std::pair{std::ref(m_borderSize), [this] { return borderSizeEffect(); }},
+-            std::pair{std::ref(m_rounding), [this] { return roundingEffect(); }}, std::pair{std::ref(m_roundingPower), [this] { return roundingPowerEffect(); }},
+-            std::pair{std::ref(m_scrollMouse), [this] { return scrollMouseEffect(); }}, std::pair{std::ref(m_scrollTouchpad), [this] { return scrollTouchpadEffect(); }},
+-            std::pair{std::ref(m_animationStyle), [this] { return animationStyleEffect(); }}, std::pair{std::ref(m_maxSize), [this] { return maxSizeEffect(); }},
+-            std::pair{std::ref(m_minSize), [this] { return minSizeEffect(); }}, std::pair{std::ref(m_activeBorderColor), [this] { return activeBorderColorEffect(); }},
+-            std::pair{std::ref(m_inactiveBorderColor), [this] { return inactiveBorderColorEffect(); }}));
++    std::apply([&](auto&&... prop) { (resetRuleProp(prop.first.get(), props, prio, effectsNuked, prop.second), ...); },
++               std::make_tuple(
++                   std::pair{std::ref(m_alpha), [this] { return alphaEffect(); }}, std::pair{std::ref(m_alphaInactive), [this] { return alphaInactiveEffect(); }},
++                   std::pair{std::ref(m_alphaFullscreen), [this] { return alphaFullscreenEffect(); }}, std::pair{std::ref(m_allowsInput), [this] { return allowsInputEffect(); }},
++                   std::pair{std::ref(m_decorate), [this] { return decorateEffect(); }}, std::pair{std::ref(m_focusOnActivate), [this] { return focusOnActivateEffect(); }},
++                   std::pair{std::ref(m_keepAspectRatio), [this] { return keepAspectRatioEffect(); }},
++                   std::pair{std::ref(m_nearestNeighbor), [this] { return nearestNeighborEffect(); }}, std::pair{std::ref(m_noAnim), [this] { return noAnimEffect(); }},
++                   std::pair{std::ref(m_noBlur), [this] { return noBlurEffect(); }}, std::pair{std::ref(m_noDim), [this] { return noDimEffect(); }},
++                   std::pair{std::ref(m_noFocus), [this] { return noFocusEffect(); }}, std::pair{std::ref(m_noMaxSize), [this] { return noMaxSizeEffect(); }},
++                   std::pair{std::ref(m_noShadow), [this] { return noShadowEffect(); }}, std::pair{std::ref(m_noGlow), [this] { return noGlowEffect(); }},
++                   std::pair{std::ref(m_noWobble), [this] { return noWobbleEffect(); }}, std::pair{std::ref(m_noShortcutsInhibit), [this] { return noShortcutsInhibitEffect(); }},
++                   std::pair{std::ref(m_opaque), [this] { return opaqueEffect(); }}, std::pair{std::ref(m_dimAround), [this] { return dimAroundEffect(); }},
++                   std::pair{std::ref(m_RGBX), [this] { return RGBXEffect(); }}, std::pair{std::ref(m_syncFullscreen), [this] { return syncFullscreenEffect(); }},
++                   std::pair{std::ref(m_tearing), [this] { return tearingEffect(); }}, std::pair{std::ref(m_xray), [this] { return xrayEffect(); }},
++                   std::pair{std::ref(m_renderUnfocused), [this] { return renderUnfocusedEffect(); }},
++                   std::pair{std::ref(m_noFollowMouse), [this] { return noFollowMouseEffect(); }}, std::pair{std::ref(m_noScreenShare), [this] { return noScreenShareEffect(); }},
++                   std::pair{std::ref(m_hideFromScreenShare), [this] { return hideFromScreenShareEffect(); }}, std::pair{std::ref(m_noVRR), [this] { return noVRREffect(); }},
++                   std::pair{std::ref(m_noAutoHDR), [this] { return noAutoHDREffect(); }}, std::pair{std::ref(m_persistentSize), [this] { return persistentSizeEffect(); }},
++                   std::pair{std::ref(m_stayFocused), [this] { return stayFocusedEffect(); }}, std::pair{std::ref(m_idleInhibitMode), [this] { return idleInhibitModeEffect(); }},
++                   std::pair{std::ref(m_confinePointer), [this] { return confinePointerEffect(); }}, std::pair{std::ref(m_noXdgDrags), [this] { return noXdgDragsEffect(); }},
++                   std::pair{std::ref(m_borderSize), [this] { return borderSizeEffect(); }}, std::pair{std::ref(m_rounding), [this] { return roundingEffect(); }},
++                   std::pair{std::ref(m_roundingPower), [this] { return roundingPowerEffect(); }}, std::pair{std::ref(m_scrollMouse), [this] { return scrollMouseEffect(); }},
++                   std::pair{std::ref(m_scrollTouchpad), [this] { return scrollTouchpadEffect(); }},
++                   std::pair{std::ref(m_animationStyle), [this] { return animationStyleEffect(); }}, std::pair{std::ref(m_maxSize), [this] { return maxSizeEffect(); }},
++                   std::pair{std::ref(m_minSize), [this] { return minSizeEffect(); }}, std::pair{std::ref(m_activeBorderColor), [this] { return activeBorderColorEffect(); }},
++                   std::pair{std::ref(m_inactiveBorderColor), [this] { return inactiveBorderColorEffect(); }}));
+ 
+     if (prio == Types::PRIORITY_WINDOW_RULE) {
+         std::erase_if(m_dynamicTags, [props, this](const auto& el) {
+@@ -368,6 +369,11 @@ CWindowRuleApplicator::SRuleResult CWindowRuleApplicator::applyDynamicRule(const
+                 m_noScreenShare.second |= rule->getPropertiesMask();
+                 break;
+             }
++            case WINDOW_RULE_EFFECT_HIDE_FROM_SCREEN_SHARE: {
++                m_hideFromScreenShare.first.set(std::get<bool>(value), Types::PRIORITY_WINDOW_RULE);
++                m_hideFromScreenShare.second |= rule->getPropertiesMask();
++                break;
++            }
+             case WINDOW_RULE_EFFECT_NO_VRR: {
+                 m_noVRR.first.set(std::get<bool>(value), Types::PRIORITY_WINDOW_RULE);
+                 m_noVRR.second |= rule->getPropertiesMask();
+diff --git a/src/desktop/rule/windowRule/WindowRuleApplicator.hpp b/src/desktop/rule/windowRule/WindowRuleApplicator.hpp
+index ed973153..f98726ca 100644
+--- a/src/desktop/rule/windowRule/WindowRuleApplicator.hpp
++++ b/src/desktop/rule/windowRule/WindowRuleApplicator.hpp
+@@ -115,6 +115,7 @@ namespace Desktop::Rule {
+         DEFINE_PROP(bool, renderUnfocused, false, WINDOW_RULE_EFFECT_RENDER_UNFOCUSED)
+         DEFINE_PROP(bool, noFollowMouse, false, WINDOW_RULE_EFFECT_NO_FOLLOW_MOUSE)
+         DEFINE_PROP(bool, noScreenShare, false, WINDOW_RULE_EFFECT_NO_SCREEN_SHARE)
++        DEFINE_PROP(bool, hideFromScreenShare, false, WINDOW_RULE_EFFECT_HIDE_FROM_SCREEN_SHARE)
+         DEFINE_PROP(bool, noVRR, false, WINDOW_RULE_EFFECT_NO_VRR)
+         DEFINE_PROP(bool, noAutoHDR, false, WINDOW_RULE_EFFECT_NO_AUTO_HDR)
+         DEFINE_PROP(bool, persistentSize, false, WINDOW_RULE_EFFECT_PERSISTENT_SIZE)
+diff --git a/src/desktop/rule/windowRule/WindowRuleEffectContainer.cpp b/src/desktop/rule/windowRule/WindowRuleEffectContainer.cpp
+index 366a8c9e..a15c448c 100644
+--- a/src/desktop/rule/windowRule/WindowRuleEffectContainer.cpp
++++ b/src/desktop/rule/windowRule/WindowRuleEffectContainer.cpp
+@@ -71,12 +71,13 @@ static const std::vector<std::string> EFFECT_STRINGS = {
+     "stay_focused",           //
+     "confine_pointer",        //
+     "no_xdg_drags",           //
++    "hide_from_screen_share", //
+     "__internal_last_static", //
+ };
+ 
+ // This is here so that if we change the rules, we get reminded to update
+ // the strings.
+-static_assert(WINDOW_RULE_EFFECT_LAST_STATIC == 61);
++static_assert(WINDOW_RULE_EFFECT_LAST_STATIC == 62);
+ 
+ CWindowRuleEffectContainer::CWindowRuleEffectContainer() : IEffectContainer<eWindowRuleEffect>(std::vector<std::string>{EFFECT_STRINGS}) {
+     ;
+diff --git a/src/desktop/rule/windowRule/WindowRuleEffectContainer.hpp b/src/desktop/rule/windowRule/WindowRuleEffectContainer.hpp
+index 8c7831dd..11777f2d 100644
+--- a/src/desktop/rule/windowRule/WindowRuleEffectContainer.hpp
++++ b/src/desktop/rule/windowRule/WindowRuleEffectContainer.hpp
+@@ -72,6 +72,7 @@ namespace Desktop::Rule {
+         WINDOW_RULE_EFFECT_STAY_FOCUSED,
+         WINDOW_RULE_EFFECT_CONFINE_POINTER,
+         WINDOW_RULE_EFFECT_NO_XDG_DRAGS,
++        WINDOW_RULE_EFFECT_HIDE_FROM_SCREEN_SHARE,
+ 
+         WINDOW_RULE_EFFECT_LAST_STATIC,
+     };
+diff --git a/src/desktop/state/Fadeout.cpp b/src/desktop/state/Fadeout.cpp
+index 55819f88..9bc82bbc 100644
+--- a/src/desktop/state/Fadeout.cpp
++++ b/src/desktop/state/Fadeout.cpp
+@@ -1,4 +1,6 @@
+ #include "Fadeout.hpp"
++#include "../view/window/Window.hpp"
++#include "../view/LayerSurface.hpp"
+ 
+ using namespace Desktop;
+ using namespace Desktop::View;
+@@ -15,6 +17,11 @@ SFadeoutRenderEffects IFadeout::effects() const {
+     return m_effects;
+ }
+ 
++bool IFadeout::hiddenFromScreenShare() const {
++    return m_hiddenFromScreenShare || (m_screenShareWindow && m_screenShareWindow->m_ruleApplicator->hideFromScreenShare().valueOrDefault()) ||
++        (m_screenShareLayer && m_screenShareLayer->m_ruleApplicator->hideFromScreenShare().valueOrDefault());
++}
++
+ SFadeoutSource IFadeout::source() const {
+     switch (plane()) {
+         case FADEOUT_PLANE_WINDOW_TILED:
+diff --git a/src/desktop/state/Fadeout.hpp b/src/desktop/state/Fadeout.hpp
+index 7c6a63ce..631cddeb 100644
+--- a/src/desktop/state/Fadeout.hpp
++++ b/src/desktop/state/Fadeout.hpp
+@@ -71,6 +71,7 @@ namespace Desktop {
+         virtual bool                  done() const      = 0;
+         virtual SFadeoutRenderEffects effects() const;
+         virtual SFadeoutSource        source() const;
++        bool                          hiddenFromScreenShare() const;
+ 
+       protected:
+         IFadeout() = default;
+@@ -78,5 +79,8 @@ namespace Desktop {
+         SP<Render::IFramebuffer> m_framebuffer;
+         PHLWORKSPACEREF          m_workspace;
+         SFadeoutRenderEffects    m_effects;
++        bool                     m_hiddenFromScreenShare = false;
++        PHLWINDOWREF             m_screenShareWindow;
++        PHLLSREF                 m_screenShareLayer;
+     };
+ }
+diff --git a/src/desktop/state/LayerFadeout.cpp b/src/desktop/state/LayerFadeout.cpp
+index 283f920a..27f56b87 100644
+--- a/src/desktop/state/LayerFadeout.cpp
++++ b/src/desktop/state/LayerFadeout.cpp
+@@ -49,11 +49,13 @@ SP<CLayerFadeout> CLayerFadeout::create(PHLLS layer, SP<Render::IFramebuffer> sn
+     if (!MONITOR)
+         return nullptr;
+ 
+-    auto fadeout           = SP<CLayerFadeout>(new CLayerFadeout());
+-    fadeout->m_monitor     = MONITOR;
+-    fadeout->m_framebuffer = snapshot;
+-    fadeout->m_geometry    = layer->m_geometry;
+-    fadeout->m_zIndex      = layerZIndex(layer);
++    auto fadeout                     = SP<CLayerFadeout>(new CLayerFadeout());
++    fadeout->m_monitor               = MONITOR;
++    fadeout->m_framebuffer           = snapshot;
++    fadeout->m_hiddenFromScreenShare = layer->m_ruleApplicator->hideFromScreenShare().valueOrDefault();
++    fadeout->m_screenShareLayer      = layer;
++    fadeout->m_geometry              = layer->m_geometry;
++    fadeout->m_zIndex                = layerZIndex(layer);
+ 
+     static auto PDIMAROUND = CConfigValue<Config::FLOAT>("decoration:dim_around");
+     if (*PDIMAROUND && layer->m_ruleApplicator->dimAround().valueOrDefault())
+diff --git a/src/desktop/state/PopupFadeout.cpp b/src/desktop/state/PopupFadeout.cpp
+index add77b50..8c7abcde 100644
+--- a/src/desktop/state/PopupFadeout.cpp
++++ b/src/desktop/state/PopupFadeout.cpp
+@@ -45,10 +45,15 @@ SP<CPopupFadeout> CPopupFadeout::create(SP<CPopup> popup, SP<Render::IFramebuffe
+     fadeout->m_monitor     = MONITOR;
+     fadeout->m_framebuffer = snapshot;
+ 
+-    if (const auto WINDOW = popup->windowOwner(); WINDOW)
+-        fadeout->m_source = {.type = eFadeoutSource::WINDOW, .workspace = WINDOW->m_workspace};
+-    else if (popup->layerOwner())
+-        fadeout->m_source.type = eFadeoutSource::LAYER;
++    if (const auto WINDOW = popup->windowOwner(); WINDOW) {
++        fadeout->m_source                = {.type = eFadeoutSource::WINDOW, .workspace = WINDOW->m_workspace};
++        fadeout->m_hiddenFromScreenShare = WINDOW->m_ruleApplicator->hideFromScreenShare().valueOrDefault();
++        fadeout->m_screenShareWindow     = WINDOW;
++    } else if (const auto LAYER = popup->layerOwner(); LAYER) {
++        fadeout->m_source.type           = eFadeoutSource::LAYER;
++        fadeout->m_hiddenFromScreenShare = LAYER->m_ruleApplicator->hideFromScreenShare().valueOrDefault();
++        fadeout->m_screenShareLayer      = LAYER;
++    }
+ 
+     static CConfigValue PBLURIGNOREA = CConfigValue<Config::FLOAT>("decoration:blur:popups_ignorealpha");
+     if (shouldBlurPopup()) {
+diff --git a/src/desktop/state/WindowFadeout.cpp b/src/desktop/state/WindowFadeout.cpp
+index 7a252a30..0f330435 100644
+--- a/src/desktop/state/WindowFadeout.cpp
++++ b/src/desktop/state/WindowFadeout.cpp
+@@ -57,13 +57,15 @@ SP<CWindowFadeout> CWindowFadeout::create(PHLWINDOW window, SP<Render::IFramebuf
+     if (!MONITOR)
+         return nullptr;
+ 
+-    auto fadeout           = SP<CWindowFadeout>(new CWindowFadeout());
+-    fadeout->m_monitor     = MONITOR;
+-    fadeout->m_workspace   = window->m_workspace;
+-    fadeout->m_framebuffer = snapshot;
+-    fadeout->m_zIndex      = windowZIndex(window);
+-    fadeout->m_sourcePos   = window->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT) - MONITOR->m_position;
+-    fadeout->m_sourceSize  = window->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
++    auto fadeout                     = SP<CWindowFadeout>(new CWindowFadeout());
++    fadeout->m_monitor               = MONITOR;
++    fadeout->m_workspace             = window->m_workspace;
++    fadeout->m_framebuffer           = snapshot;
++    fadeout->m_hiddenFromScreenShare = window->m_ruleApplicator->hideFromScreenShare().valueOrDefault();
++    fadeout->m_screenShareWindow     = window;
++    fadeout->m_zIndex                = windowZIndex(window);
++    fadeout->m_sourcePos             = window->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT) - MONITOR->m_position;
++    fadeout->m_sourceSize            = window->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
+     const bool OVERFULLSCREEN =
+         window->isFloating() && window->shouldRenderOverFullscreen() && window->m_workspace && Fullscreen::controller()->hasFullscreen(window->m_workspace, true);
+     fadeout->m_plane         = !window->isFloating() ? FADEOUT_PLANE_WINDOW_TILED : (OVERFULLSCREEN ? FADEOUT_PLANE_WINDOW_OVER_FULLSCREEN : FADEOUT_PLANE_WINDOW_FLOATING);
+diff --git a/src/desktop/view/window/WindowPresentation.cpp b/src/desktop/view/window/WindowPresentation.cpp
+index 984fb05f..7cef90de 100644
+--- a/src/desktop/view/window/WindowPresentation.cpp
++++ b/src/desktop/view/window/WindowPresentation.cpp
+@@ -254,6 +254,10 @@ Render::SWindowRenderPresentation CWindowPresentation::renderPresentation(Render
+     return Render::resolveWindowPresentation(renderPresentationState(dynamicPointerCast<Workspace::CWorkspacePresentable>(m_window.m_workspace)), mode);
+ }
+ 
++Render::SWindowRenderPresentation CWindowPresentation::renderPresentation(Render::eSceneMode mode, bool ignoreFullscreen) const {
++    return Render::resolveWindowPresentation(renderPresentationState(dynamicPointerCast<Workspace::CWorkspacePresentable>(m_window.m_workspace)), mode, ignoreFullscreen);
++}
++
+ Render::SWindowRenderPresentation CWindowPresentation::renderPresentation(const SP<Workspace::CWorkspacePresentable>& presentation) const {
+     return Render::resolveWindowPresentation(renderPresentationState(presentation));
+ }
+diff --git a/src/desktop/view/window/WindowPresentation.hpp b/src/desktop/view/window/WindowPresentation.hpp
+index c0db455b..18f5c865 100644
+--- a/src/desktop/view/window/WindowPresentation.hpp
++++ b/src/desktop/view/window/WindowPresentation.hpp
+@@ -64,6 +64,7 @@ namespace Desktop::View {
+         bool                                              opaque(const Render::SWindowRenderPresentation& presentation) const;
+         Render::SWindowRenderPresentation                 renderPresentation() const;
+         Render::SWindowRenderPresentation                 renderPresentation(Render::eSceneMode mode) const;
++        Render::SWindowRenderPresentation                 renderPresentation(Render::eSceneMode mode, bool ignoreFullscreen) const;
+         Render::SWindowRenderPresentation                 renderPresentation(const SP<Workspace::CWorkspacePresentable>& presentation) const;
+         float                                             rounding();
+         float                                             roundingPower();
+diff --git a/src/errorOverlay/Overlay.cpp b/src/errorOverlay/Overlay.cpp
+index 8ffb7939..8d51ec50 100644
+--- a/src/errorOverlay/Overlay.cpp
++++ b/src/errorOverlay/Overlay.cpp
+@@ -178,12 +178,12 @@ void COverlay::updateReservedArea(PHLMONITOR monitor) {
+ 
+ void COverlay::draw(Render::CRenderContext& ctx) {
+     if (!m_isCreated || !m_queued.empty()) {
+-        if (!m_queued.empty())
++        if (!m_queued.empty() && !ctx.readOnlyEffects())
+             createQueued();
+         return;
+     }
+ 
+-    if (m_queuedDestroy) {
++    if (m_queuedDestroy && !ctx.readOnlyEffects()) {
+         if (!m_fadeOpacity->isBeingAnimated()) {
+             if (m_fadeOpacity->value() == 0.f) {
+                 m_queuedDestroy = false;
+@@ -215,15 +215,17 @@ void COverlay::draw(Render::CRenderContext& ctx) {
+     const float barY     = TOPBAR ? m_outerPad : PMONITOR->m_transformedSize.y - m_lastHeight - m_outerPad;
+     const CBox  barBox   = {m_outerPad, barY, barWidth, m_lastHeight};
+ 
+-    m_damageBox.x      = sc<int>(PMONITOR->m_position.x);
+-    m_damageBox.width  = sc<int>(PMONITOR->m_transformedSize.x);
+-    m_damageBox.height = sc<int>(m_lastHeight + m_outerPad * 2.F);
+-    m_damageBox.y      = sc<int>(PMONITOR->m_position.y + (TOPBAR ? 0 : PMONITOR->m_transformedSize.y - m_damageBox.height));
++    if (!ctx.readOnlyEffects()) {
++        m_damageBox.x      = sc<int>(PMONITOR->m_position.x);
++        m_damageBox.width  = sc<int>(PMONITOR->m_transformedSize.x);
++        m_damageBox.height = sc<int>(m_lastHeight + m_outerPad * 2.F);
++        m_damageBox.y      = sc<int>(PMONITOR->m_position.y + (TOPBAR ? 0 : PMONITOR->m_transformedSize.y - m_damageBox.height));
+ 
+-    if (m_fadeOpacity->isBeingAnimated() || m_monitorChanged)
+-        g_pHyprRenderer->damageBox(m_damageBox);
++        if (m_fadeOpacity->isBeingAnimated() || m_monitorChanged)
++            g_pHyprRenderer->damageBox(m_damageBox);
+ 
+-    m_monitorChanged = false;
++        m_monitorChanged = false;
++    }
+ 
+     const float                 opacity = m_fadeOpacity->value();
+ 
+diff --git a/src/ipc/s1/Commands.cpp b/src/ipc/s1/Commands.cpp
+index 326113e3..016fdff2 100644
+--- a/src/ipc/s1/Commands.cpp
++++ b/src/ipc/s1/Commands.cpp
+@@ -1575,6 +1575,8 @@ static std::string dispatchGetProp(eHyprCtlOutputFormat format, std::string requ
+         return windowPropToString(PWINDOW->m_ruleApplicator->noFollowMouse());
+     else if (PROP == "no_screen_share")
+         return windowPropToString(PWINDOW->m_ruleApplicator->noScreenShare());
++    else if (PROP == "hide_from_screen_share")
++        return windowPropToString(PWINDOW->m_ruleApplicator->hideFromScreenShare());
+     else if (PROP == "no_vrr")
+         return windowPropToString(PWINDOW->m_ruleApplicator->noVRR());
+     else if (PROP == "no_auto_hdr")
+diff --git a/src/managers/screenshare/ScreenshareFrame.cpp b/src/managers/screenshare/ScreenshareFrame.cpp
+index 9bd236c2..e5cfef5a 100644
+--- a/src/managers/screenshare/ScreenshareFrame.cpp
++++ b/src/managers/screenshare/ScreenshareFrame.cpp
+@@ -6,6 +6,9 @@
+ #include "../../Compositor.hpp"
+ #include "../../render/Renderer.hpp"
+ #include "../../render/OpenGL.hpp"
++#include "../../render/SceneResources.hpp"
++#include "../../render/scene/MonitorScene.hpp"
++#include "../../desktop/state/FadingOutState.hpp"
+ #include "../../output/Monitor.hpp"
+ #include "../../state/MonitorState.hpp"
+ #include "../../desktop/view/window/Window.hpp"
+@@ -15,6 +18,10 @@
+ #include "../../render/pass/RectPassElement.hpp"
+ #include "helpers/cm/ColorManagement.hpp"
+ #include "../../managers/fullscreen/FullscreenController.hpp"
++#include "../../config/ConfigValue.hpp"
++#include "../../notification/NotificationOverlay.hpp"
++#include "../../errorOverlay/Overlay.hpp"
++#include "../../debug/Overlay.hpp"
+ #include <hyprutils/math/Region.hpp>
+ #include <hyprgraphics/egl/Egl.hpp>
+ 
+@@ -160,6 +167,12 @@ void CScreenshareFrame::copy() {
+ 
+     // store a snapshot before the permission popup so we don't break screenshots
+     const auto PERM = g_pDynamicPermissionManager->clientPermissionMode(m_session->m_client, PERMISSION_TYPE_SCREENCOPY);
++    if (PERM != PERMISSION_RULE_ALLOW_MODE_DENY && (PERM != PERMISSION_RULE_ALLOW_MODE_PENDING || !m_session->m_tempFB || !m_session->m_tempFB->isAllocated()) &&
++        !prepareMonitorFrame()) {
++        m_failed = true;
++        m_callback(RESULT_NOT_COPIED);
++        return;
++    }
+     if (PERM == PERMISSION_RULE_ALLOW_MODE_PENDING) {
+         if (!m_session->m_tempFB || !m_session->m_tempFB->isAllocated())
+             storeTempFB();
+@@ -181,13 +194,85 @@ void CScreenshareFrame::copy() {
+         m_callback(RESULT_NOT_COPIED);
+ }
+ 
++bool CScreenshareFrame::prepareMonitorFrame() {
++    m_useFilteredMonitor = false;
++    if (m_session->m_type != SHARE_MONITOR && m_session->m_type != SHARE_REGION)
++        return true;
++
++    const auto MONITOR = m_session->monitor();
++    m_sceneMonitor     = MONITOR;
++    if (MONITOR->isMirror())
++        m_sceneMonitor = MONITOR->m_mirrorOf;
++    const auto SOURCE = m_sceneMonitor.lock();
++    if (!SOURCE)
++        return false;
++
++    const bool HIDDEN_WINDOW  = std::ranges::any_of(Desktop::windowState()->windows(), [&](const auto& window) {
++        return window->mapped() && !window->isHidden() && window->m_ruleApplicator->hideFromScreenShare().valueOrDefault() && window->presentation().visibleOnMonitor(SOURCE);
++    });
++    const bool HIDDEN_LAYER   = std::ranges::any_of(Desktop::layerState()->layers(), [&](const auto& layer) {
++        return layer->m_monitor == SOURCE && layer->mapped() && layer->m_ruleApplicator->hideFromScreenShare().valueOrDefault();
++    });
++    const bool HIDDEN_FADEOUT = std::ranges::any_of(Desktop::fadingOutState()->fadeouts(),
++                                                    [&](const auto& fadeout) { return fadeout && fadeout->monitor() == SOURCE && fadeout->hiddenFromScreenShare(); });
++    if (!HIDDEN_WINDOW && !HIDDEN_LAYER && !HIDDEN_FADEOUT)
++        return true;
++
++    // Recompose the scene: the output texture has already lost the pixels behind
++    // an opaque private surface. Keep blur caches separate from the live output.
++    if (!m_session->m_filteredMonitorFB)
++        m_session->m_filteredMonitorFB = g_pHyprRenderer->createFB();
++    if (!m_session->m_filteredSceneResources)
++        m_session->m_filteredSceneResources = makeShared<Render::CSceneResources>(g_pHyprRenderer->createFB());
++
++    const auto SIZE   = SOURCE->m_transformedSize;
++    const auto FORMAT = SOURCE->useFP16() ? DRM_FORMAT_ABGR16161616F : DRM_FORMAT_ABGR8888;
++    if (!m_session->m_filteredMonitorFB->alloc(SIZE.x, SIZE.y, FORMAT))
++        return false;
++    m_session->m_filteredMonitorFB->setImageDescription(SOURCE->workBufferImageDescription());
++
++    CRegion damage{CBox{{}, SIZE}};
++    if (!g_pHyprRenderer->beginRender(SOURCE, damage, Render::RENDER_MODE_FULL_FAKE, {}, m_session->m_filteredMonitorFB, false,
++                                      {.sceneResources = m_session->m_filteredSceneResources}))
++        return false;
++
++    bool                      finishing = false;
++    const Render::CScopeGuard cleanup([&] {
++        if (!finishing)
++            g_pHyprRenderer->abortRender();
++    });
++    auto&                     ctx = g_pHyprRenderer->context();
++    ctx.m_renderingScreenShare    = true;
++    ctx.m_blockSurfaceFeedback    = true;
++    ctx.m_data.blockScreenShader  = true;
++    g_pHyprRenderer->draw(ctx, CClearPassElement::SClearData{Colors::BLACK}, damage);
++    Render::CMonitorScene scene(SOURCE);
++    scene.draw(ctx, ctx.effectTime());
++
++    if (SOURCE == Desktop::focusState()->monitor()) {
++        Notification::overlay()->draw(ctx, SOURCE);
++        ErrorOverlay::overlay()->draw(ctx);
++    }
++    static auto PDEBUGOVERLAY = CConfigValue<Config::INTEGER>("debug:overlay");
++    if (!State::monitorState()->monitors().empty() && SOURCE == State::monitorState()->monitors().front() && *PDEBUGOVERLAY == 1)
++        Debug::overlay()->draw(ctx);
++
++    if (SOURCE->m_dpmsBlackOpacity->value() != 0.F)
++        g_pHyprRenderer->draw(ctx, CRectPassElement::SRectData{.box = CBox{{}, SIZE}, .color = Colors::BLACK.modifyA(SOURCE->m_dpmsBlackOpacity->value())}, damage);
++
++    finishing = true;
++    g_pHyprRenderer->endRender();
++    m_useFilteredMonitor = true;
++    return true;
++}
++
+ void CScreenshareFrame::renderMonitor(Render::CRenderContext& ctx) {
+     if ((m_session->m_type != SHARE_MONITOR && m_session->m_type != SHARE_REGION) || done())
+         return;
+ 
+     const auto PMONITOR = m_session->monitor();
+ 
+-    auto       TEXTURE = ctx.m_data.pMonitor->resources()->getMirrorTexture();
++    auto       TEXTURE = m_useFilteredMonitor ? m_session->m_filteredMonitorFB->getTexture() : PMONITOR->resources()->getMirrorTexture();
+     if (!TEXTURE) {
+         LOG(Log::ERR, "Invalid source texture");
+         return;
+@@ -210,7 +295,18 @@ void CScreenshareFrame::renderMonitor(Render::CRenderContext& ctx) {
+     g_pHyprRenderer->setViewport(0, 0, m_bufferSize.x, m_bufferSize.y);
+ 
+     // render monitor texture
+-    CBox       monbox = CBox{{}, PMONITOR->m_transformedSize}.translate(-m_session->m_captureBox.pos());
++    CBox       monbox      = CBox{{}, PMONITOR->m_transformedSize}.translate(-m_session->m_captureBox.pos());
++    const auto SOURCE      = m_useFilteredMonitor ? m_sceneMonitor.lock() : PMONITOR;
++    double     mirrorScale = 1.0;
++    Vector2D   mirrorOffset;
++    if (m_useFilteredMonitor && PMONITOR->isMirror()) {
++        mirrorScale  = std::min(PMONITOR->m_transformedSize.x / SOURCE->m_transformedSize.x, PMONITOR->m_transformedSize.y / SOURCE->m_transformedSize.y);
++        mirrorOffset = (PMONITOR->m_transformedSize - SOURCE->m_transformedSize * mirrorScale) / 2.0;
++        monbox       = CBox{mirrorOffset, SOURCE->m_transformedSize * mirrorScale}.translate(-m_session->m_captureBox.pos());
++    }
++    const auto captureBoxFor = [&](CBox box) {
++        return box.translate(-SOURCE->m_position).scale(SOURCE->m_scale * mirrorScale).translate(mirrorOffset).translate(-m_session->m_captureBox.pos());
++    };
+ 
+     const auto OLD                 = ctx.m_data.renderModif.enabled;
+     ctx.m_data.renderModif.enabled = false;
+@@ -233,8 +329,9 @@ void CScreenshareFrame::renderMonitor(Render::CRenderContext& ctx) {
+             const auto popRel = popup->coordsRelativeToParent();
+             popup->wlSurface()->resource()->breadthfirst(
+                 [&](SP<CWLSurfaceResource> surf, const Vector2D& localOff, void*) {
+-                    const auto size = surf->m_current.size;
+-                    const auto surfBox =
++                    const auto size    = surf->m_current.size;
++                    const auto surfBox = m_useFilteredMonitor ?
++                        captureBoxFor(CBox{popupBaseOffset + popRel + localOff, size}) :
+                         CBox{popupBaseOffset + popRel + localOff, size}.translate(PMONITOR->m_position).scale(PMONITOR->m_scale).translate(-m_session->m_captureBox.pos());
+ 
+                     if LIKELY (surfBox.w > 0 && surfBox.h > 0)
+@@ -245,19 +342,19 @@ void CScreenshareFrame::renderMonitor(Render::CRenderContext& ctx) {
+     };
+ 
+     for (auto const& l : Desktop::layerState()->layers()) {
++        if (l->m_ruleApplicator->hideFromScreenShare().valueOrDefault())
++            continue;
++
+         if (!l->m_ruleApplicator->noScreenShare().valueOrDefault())
+             continue;
+ 
+-        if UNLIKELY (!l->mapped() || !l->acceptsInput() || !l->alphaNonZero())
++        if UNLIKELY (!l->mapped() || !l->acceptsInput() || (m_useFilteredMonitor ? g_pHyprRenderer->layerAlphaForScreenShare(l, SOURCE) <= 0.F : !l->alphaNonZero()))
+             continue;
+ 
+         const auto REALPOS  = l->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
+         const auto REALSIZE = l->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
+ 
+-        const auto noScreenShareBox = CBox{REALPOS.x, REALPOS.y, std::max(REALSIZE.x, 5.0), std::max(REALSIZE.y, 5.0)}
+-                                          .translate(-PMONITOR->m_position)
+-                                          .scale(PMONITOR->m_scale)
+-                                          .translate(-m_session->m_captureBox.pos());
++        const auto noScreenShareBox = captureBoxFor(CBox{REALPOS.x, REALPOS.y, std::max(REALSIZE.x, 5.0), std::max(REALSIZE.y, 5.0)});
+ 
+         g_pHyprRenderer->draw(ctx, CRectPassElement::SRectData{.box = noScreenShareBox, .color = Colors::BLACK}, noScreenShareBox);
+ 
+@@ -268,10 +365,13 @@ void CScreenshareFrame::renderMonitor(Render::CRenderContext& ctx) {
+     }
+ 
+     for (auto const& w : Desktop::windowState()->windows()) {
++        if (w->m_ruleApplicator->hideFromScreenShare().valueOrDefault())
++            continue;
++
+         if (!w->m_ruleApplicator->noScreenShare().valueOrDefault())
+             continue;
+ 
+-        if (!g_pHyprRenderer->shouldRenderWindow(w, PMONITOR))
++        if (m_useFilteredMonitor ? !g_pHyprRenderer->shouldRenderWindowForScreenShare(w, SOURCE) : !g_pHyprRenderer->shouldRenderWindow(w, PMONITOR))
+             continue;
+ 
+         if (w->isHidden())
+@@ -285,14 +385,11 @@ void CScreenshareFrame::renderMonitor(Render::CRenderContext& ctx) {
+         const auto renderOffset     = PWORKSPACE && !(w->m_state & WINDOW_STATE_PINNED) ? PWORKSPACE->m_renderOffset->value() : Vector2D{};
+         const auto REALSIZE         = w->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
+         const auto REALPOS          = w->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT) + renderOffset;
+-        const auto noScreenShareBox = CBox{REALPOS.x, REALPOS.y, std::max(REALSIZE.x, 5.0), std::max(REALSIZE.y, 5.0)}
+-                                          .translate(-PMONITOR->m_position)
+-                                          .scale(PMONITOR->m_scale)
+-                                          .translate(-m_session->m_captureBox.pos());
++        const auto noScreenShareBox = captureBoxFor(CBox{REALPOS.x, REALPOS.y, std::max(REALSIZE.x, 5.0), std::max(REALSIZE.y, 5.0)});
+ 
+         // seems like rounding doesn't play well with how we manipulate the box position to render regions causing the window to leak through
+         const auto dontRound     = m_session->m_captureBox.pos() != Vector2D() || Fullscreen::controller()->isFullscreen(w, Fullscreen::FSMODE_FULLSCREEN);
+-        const auto rounding      = dontRound ? 0 : w->presentation().rounding() * PMONITOR->m_scale;
++        const auto rounding      = dontRound ? 0 : w->presentation().rounding() * SOURCE->m_scale * mirrorScale;
+         const auto roundingPower = dontRound ? 2.0f : w->presentation().roundingPower();
+ 
+         g_pHyprRenderer->draw(ctx,
+@@ -373,7 +470,8 @@ void CScreenshareFrame::render(Render::CRenderContext& ctx) {
+     if (PERM == PERMISSION_RULE_ALLOW_MODE_PENDING)
+         return;
+ 
+-    bool windowShareDenied = m_session->m_type == SHARE_WINDOW && m_session->m_window->m_ruleApplicator && m_session->m_window->m_ruleApplicator->noScreenShare().valueOrDefault();
++    bool windowShareDenied = m_session->m_type == SHARE_WINDOW && m_session->m_window->m_ruleApplicator &&
++        (m_session->m_window->m_ruleApplicator->noScreenShare().valueOrDefault() || m_session->m_window->m_ruleApplicator->hideFromScreenShare().valueOrDefault());
+     g_pHyprRenderer->startRenderPass(ctx);
+     if (PERM == PERMISSION_RULE_ALLOW_MODE_DENY || windowShareDenied) {
+         CBox texbox = CBox{m_bufferSize / 2.F, g_pHyprRenderer->m_screencopyDeniedTexture->m_size}.translate(-g_pHyprRenderer->m_screencopyDeniedTexture->m_size / 2.F);
+@@ -382,10 +480,15 @@ void CScreenshareFrame::render(Render::CRenderContext& ctx) {
+     }
+ 
+     if (m_session->m_tempFB && m_session->m_tempFB->isAllocated()) {
+-        CBox texbox = {{}, m_bufferSize};
+-        g_pHyprRenderer->draw(ctx, CTexPassElement::SRenderData{.tex = m_session->m_tempFB->getTexture(), .box = texbox}, texbox);
++        // A rule may have changed while the permission prompt was open. Prefer
++        // the freshly filtered scene over a snapshot taken before that change.
++        if (!m_useFilteredMonitor) {
++            CBox texbox = {{}, m_bufferSize};
++            g_pHyprRenderer->draw(ctx, CTexPassElement::SRenderData{.tex = m_session->m_tempFB->getTexture(), .box = texbox}, texbox);
++        }
+         m_session->m_tempFB->release();
+-        return;
++        if (!m_useFilteredMonitor)
++            return;
+     }
+ 
+     switch (m_session->m_type) {
+diff --git a/src/managers/screenshare/ScreenshareManager.hpp b/src/managers/screenshare/ScreenshareManager.hpp
+index 73fac767..35391489 100644
+--- a/src/managers/screenshare/ScreenshareManager.hpp
++++ b/src/managers/screenshare/ScreenshareManager.hpp
+@@ -67,25 +67,27 @@ namespace Screenshare {
+         CScreenshareSession(PHLMONITOR monitor, CBox captureRegion, wl_client* client);
+         CScreenshareSession(PHLWINDOW window, wl_client* client);
+ 
+-        WP<CScreenshareSession>  m_self;
+-        bool                     m_stopped = false;
++        WP<CScreenshareSession>     m_self;
++        bool                        m_stopped = false;
+ 
+-        eScreenshareType         m_type = SHARE_NONE;
+-        PHLMONITORREF            m_monitor;
+-        PHLWINDOWREF             m_window;
+-        CBox                     m_captureBox = {}; // given capture area in logical coordinates (see xdg_output)
++        eScreenshareType            m_type = SHARE_NONE;
++        PHLMONITORREF               m_monitor;
++        PHLWINDOWREF                m_window;
++        CBox                        m_captureBox = {}; // given capture area in logical coordinates (see xdg_output)
+ 
+-        wl_client*               m_client = nullptr;
+-        std::string              m_name   = "";
++        wl_client*                  m_client = nullptr;
++        std::string                 m_name   = "";
+ 
+-        std::vector<DRMFormat>   m_formats;
+-        Vector2D                 m_bufferSize = Vector2D(0, 0);
++        std::vector<DRMFormat>      m_formats;
++        Vector2D                    m_bufferSize = Vector2D(0, 0);
+ 
+-        SP<Render::IFramebuffer> m_tempFB;
++        SP<Render::IFramebuffer>    m_tempFB;
++        SP<Render::IFramebuffer>    m_filteredMonitorFB;
++        SP<Render::CSceneResources> m_filteredSceneResources;
+ 
+-        SP<CEventLoopTimer>      m_shareStopTimer;
+-        bool                     m_sharing = false;
+-        bool                     m_stale   = false;
++        SP<CEventLoopTimer>         m_shareStopTimer;
++        bool                        m_sharing = false;
++        bool                        m_stale   = false;
+ 
+         struct {
+             CHyprSignalListener monitorDestroyed;
+@@ -180,14 +182,17 @@ namespace Screenshare {
+         Vector2D                m_bufferSize = Vector2D(0, 0);
+         CRegion                 m_damage; // damage in buffer coords
+         bool                    m_shared = false, m_copied = false, m_failed = false;
+-        bool                    m_copyInFlight  = false; // a dmabuf copy is issued and waiting on its fence
+-        bool                    m_overlayCursor = true;
+-        bool                    m_isFirst       = false;
++        bool                    m_copyInFlight       = false; // a dmabuf copy is issued and waiting on its fence
++        bool                    m_overlayCursor      = true;
++        bool                    m_isFirst            = false;
++        bool                    m_useFilteredMonitor = false;
++        PHLMONITORREF           m_sceneMonitor;
+ 
+         //
+         void copy();
+         bool copyDmabuf();
+         bool copyShm();
++        bool prepareMonitorFrame();
+ 
+         void render(Render::CRenderContext& ctx);
+         void renderMonitor(Render::CRenderContext& ctx);
+diff --git a/src/notification/NotificationOverlay.cpp b/src/notification/NotificationOverlay.cpp
+index 766ebd18..73437153 100644
+--- a/src/notification/NotificationOverlay.cpp
++++ b/src/notification/NotificationOverlay.cpp
+@@ -288,7 +288,8 @@ CBox CNotificationOverlay::drawNotifications(Render::CRenderContext& ctx, PHLMON
+     }
+ 
+     // cleanup notifs
+-    std::erase_if(m_notifications, [&](const auto& notif) { return notif->gone(); });
++    if (!ctx.readOnlyEffects())
++        std::erase_if(m_notifications, [&](const auto& notif) { return notif->gone(); });
+ 
+     return CBox{sc<int>(pMonitor->m_position.x + pMonitor->m_size.x - maxWidth - NOTIF_DAMAGE_PAD_X), sc<int>(pMonitor->m_position.y), sc<int>(maxWidth + NOTIF_DAMAGE_PAD_X),
+                 sc<int>(offsetY + NOTIF_OFFSET_Y)};
+@@ -297,6 +298,8 @@ CBox CNotificationOverlay::drawNotifications(Render::CRenderContext& ctx, PHLMON
+ void CNotificationOverlay::draw(Render::CRenderContext& ctx, PHLMONITOR pMonitor) {
+     // Draw the notifications
+     if (m_notifications.empty()) {
++        if (ctx.readOnlyEffects())
++            return;
+         if (m_lastDamage.width > 0 && m_lastDamage.height > 0)
+             g_pHyprRenderer->damageBox(m_lastDamage);
+         m_lastDamage = {};
+@@ -305,6 +308,9 @@ void CNotificationOverlay::draw(Render::CRenderContext& ctx, PHLMONITOR pMonitor
+ 
+     CBox damage = drawNotifications(ctx, pMonitor);
+ 
++    if (ctx.readOnlyEffects())
++        return;
++
+     g_pHyprRenderer->damageBox(damage);
+     g_pHyprRenderer->damageBox(m_lastDamage);
+ 
+diff --git a/src/protocols/core/DataDevice.cpp b/src/protocols/core/DataDevice.cpp
+index ca36c009..417ba39e 100644
+--- a/src/protocols/core/DataDevice.cpp
++++ b/src/protocols/core/DataDevice.cpp
+@@ -13,6 +13,7 @@
+ #include "../../pointer/cursor/CursorShapeOverrideController.hpp"
+ #include "../../output/Monitor.hpp"
+ #include "../../render/Renderer.hpp"
++#include "../../render/ScreenShare.hpp"
+ #include "../../xwayland/Dnd.hpp"
+ #include "../../event/EventBus.hpp"
+ using namespace Hyprutils::OS;
+@@ -827,6 +828,9 @@ void CWLDataDeviceProtocol::abortDrag() {
+ }
+ 
+ void CWLDataDeviceProtocol::renderDND(Render::CRenderContext& ctx, PHLMONITOR pMonitor, const Time::steady_tp& when) {
++    if (ctx.m_renderingScreenShare && Render::surfaceHiddenFromScreenShare(m_dnd.originSurface.lock()))
++        return;
++
+     if (!m_dnd.dndSurface || !m_dnd.dndSurface->m_current.texture)
+         return;
+ 
+@@ -843,6 +847,9 @@ void CWLDataDeviceProtocol::renderDND(Render::CRenderContext& ctx, PHLMONITOR pM
+     data.box = box;
+     g_pHyprRenderer->addPassElement(ctx, makeUnique<CTexPassElement>(std::move(data)));
+ 
++    if (ctx.m_blockSurfaceFeedback)
++        return;
++
+     CBox damageBox = CBox{surfacePos, m_dnd.dndSurface->m_current.size}.expand(5);
+     g_pHyprRenderer->damageBox(damageBox);
+ 
+diff --git a/src/render/Context.cpp b/src/render/Context.cpp
+index f33927ea..852467b1 100644
+--- a/src/render/Context.cpp
++++ b/src/render/Context.cpp
+@@ -79,6 +79,7 @@ void CRenderContext::reset() {
+     m_frameTime            = {};
+     m_blockSurfaceFeedback = false;
+     m_renderingSnapshot    = false;
++    m_renderingScreenShare = false;
+     m_swapchainAcquired    = false;
+     m_gl                   = {};
+     m_active               = false;
+diff --git a/src/render/Context.hpp b/src/render/Context.hpp
+index 0b2928ce..3ee0279f 100644
+--- a/src/render/Context.hpp
++++ b/src/render/Context.hpp
+@@ -77,6 +77,7 @@ namespace Render {
+ 
+         bool                               m_blockSurfaceFeedback = false;
+         bool                               m_renderingSnapshot    = false;
++        bool                               m_renderingScreenShare = false;
+         bool                               m_swapchainAcquired    = false;
+ 
+         struct {
+diff --git a/src/render/ElementRenderer.cpp b/src/render/ElementRenderer.cpp
+index e6ffe0fc..8e5313a6 100644
+--- a/src/render/ElementRenderer.cpp
++++ b/src/render/ElementRenderer.cpp
+@@ -428,7 +428,12 @@ void IElementRenderer::drawSurface(CRenderContext& ctx, WP<CSurfacePassElement>
+ 
+     g_pHyprRenderer->blend(true);
+ 
+-    if (!ctx.m_blockSurfaceFeedback)
++    // Captured public surfaces can be hidden by a private fullscreen window on
++    // the local output. Keep their clients producing frames without reporting
++    // that the capture was presented on the physical monitor.
++    if (ctx.m_renderingScreenShare)
++        element->m_data.surface->frame(element->m_data.when);
++    else if (!ctx.m_blockSurfaceFeedback)
+         element->m_data.surface->presentFeedback(element->m_data.when, element->m_data.pMonitor->m_self.lock());
+ };
+ 
+diff --git a/src/render/Renderer.cpp b/src/render/Renderer.cpp
+index 3d8b04e3..2b8c6611 100644
+--- a/src/render/Renderer.cpp
++++ b/src/render/Renderer.cpp
+@@ -1,4 +1,5 @@
+ #include "Renderer.hpp"
++#include "ScreenShare.hpp"
+ #include "../Compositor.hpp"
+ #include "../helpers/math/Math.hpp"
+ #include <algorithm>
+@@ -12,6 +13,7 @@
+ #include "../pointer/cursor/CursorManager.hpp"
+ #include "../pointer/PointerManager.hpp"
+ #include "../managers/input/InputManager.hpp"
++#include "../managers/input/TextInput.hpp"
+ #include "../animation/AnimationManager.hpp"
+ #include "../managers/fullscreen/FullscreenController.hpp"
+ #include "../desktop/view/window/Window.hpp"
+@@ -231,6 +233,10 @@ WP<Render::GL::CHyprOpenGLImpl> IHyprRenderer::glBackend() {
+ }
+ 
+ bool IHyprRenderer::shouldRenderWindow(PHLWINDOW pWindow, PHLMONITOR pMonitor) {
++    return shouldRenderWindow(pWindow, pMonitor, false);
++}
++
++bool IHyprRenderer::shouldRenderWindow(PHLWINDOW pWindow, PHLMONITOR pMonitor, bool ignoreFullscreen) {
+     if (!pWindow->presentation().visibleOnMonitor(pMonitor))
+         return false;
+ 
+@@ -251,7 +257,7 @@ bool IHyprRenderer::shouldRenderWindow(PHLWINDOW pWindow, PHLMONITOR pMonitor) {
+             return true;
+ 
+         // if hidden behind fullscreen
+-        if (Fullscreen::controller()->hasFullscreen(PWINDOWWORKSPACE) && !pWindow->isAllowedOverFullscreen() &&
++        if (!ignoreFullscreen && Fullscreen::controller()->hasFullscreen(PWINDOWWORKSPACE) && !pWindow->isAllowedOverFullscreen() &&
+             pWindow->presentation().alphaValue(WINDOW_ALPHA_FADE) * pWindow->presentation().alphaValue(WINDOW_ALPHA_FULLSCREEN) == 0)
+             return false;
+ 
+@@ -331,9 +337,40 @@ bool IHyprRenderer::shouldRenderMonitor(PHLMONITOR monitor) {
+     return true;
+ }
+ 
+-bool IHyprRenderer::shouldRenderWindowInScene(PHLWINDOW window, PHLMONITOR monitor, PHLWORKSPACE workspace, eSceneMode mode) {
++static bool screenShareHidesFullscreen(bool screenShare, PHLWORKSPACE workspace) {
++    if (!screenShare || !workspace)
++        return false;
++
++    const auto WINDOW = Fullscreen::controller()->getFullscreenWindow(workspace);
++    return WINDOW && WINDOW->m_ruleApplicator->hideFromScreenShare().valueOrDefault();
++}
++
++static SWindowRenderPresentation windowPresentationForScene(CRenderContext& ctx, PHLWINDOW window, eSceneMode mode) {
++    return window->presentation().renderPresentation(mode, screenShareHidesFullscreen(ctx.m_renderingScreenShare, window->m_workspace));
++}
++
++bool IHyprRenderer::shouldRenderWindowForScreenShare(PHLWINDOW window, PHLMONITOR monitor) {
++    return !window->m_ruleApplicator->hideFromScreenShare().valueOrDefault() && shouldRenderWindow(window, monitor, screenShareHidesFullscreen(true, window->m_workspace));
++}
++
++float IHyprRenderer::layerAlphaForScreenShare(PHLLS layer, PHLMONITOR monitor) {
++    if (layer->m_ruleApplicator->hideFromScreenShare().valueOrDefault())
++        return 0.F;
++
++    // Fullscreen hides top layers through their fade channel. Restore them only
++    // in the capture scene when the fullscreen owner is omitted.
++    if (layer->m_layer == ZWLR_LAYER_SHELL_V1_LAYER_TOP && !(layer->m_flags & LAYER_FLAG_ABOVE_FULLSCREEN) && screenShareHidesFullscreen(true, monitor->m_activeWorkspace))
++        return 1.F;
++
++    return layer->alpha()[LS_ALPHA_FADE]->value();
++}
++
++bool IHyprRenderer::shouldRenderWindowInScene(CRenderContext& ctx, PHLWINDOW window, PHLMONITOR monitor, PHLWORKSPACE workspace, eSceneMode mode) {
++    if (ctx.m_renderingScreenShare && window->m_ruleApplicator->hideFromScreenShare().valueOrDefault())
++        return false;
++
+     if (mode == eSceneMode::MONITOR)
+-        return sceneSelectsWindow(mode, {.monitorVisible = shouldRenderWindow(window, monitor)});
++        return sceneSelectsWindow(mode, {.monitorVisible = ctx.m_renderingScreenShare ? shouldRenderWindowForScreenShare(window, monitor) : shouldRenderWindow(window, monitor)});
+ 
+     return sceneSelectsWindow(mode,
+                               {
+@@ -357,7 +394,7 @@ void IHyprRenderer::renderWorkspaceWindowsFullscreen(CRenderContext& ctx, PHLMON
+     std::vector<PHLWINDOW> windows;
+     windows.reserve(Desktop::windowState()->windows().size());
+     for (auto const& w : Desktop::windowState()->windows()) {
+-        if (!shouldRenderWindowInScene(w, pMonitor, pWorkspace, mode))
++        if (!shouldRenderWindowInScene(ctx, w, pMonitor, pWorkspace, mode))
+             continue;
+ 
+         if (w->presentation().alphaValue(WINDOW_ALPHA_FADE) * w->presentation().alphaValue(WINDOW_ALPHA_FULLSCREEN) == 0.f)
+@@ -377,7 +414,7 @@ void IHyprRenderer::renderWorkspaceWindowsFullscreen(CRenderContext& ctx, PHLMON
+         if (SPECIAL != w->onSpecialWorkspace())
+             continue;
+ 
+-        renderWindow(ctx, w, pMonitor, w->presentation().renderPresentation(mode), time, true, RENDER_PASS_ALL);
++        renderWindow(ctx, w, pMonitor, windowPresentationForScene(ctx, w, mode), time, true, RENDER_PASS_ALL);
+     }
+     renderFadeouts(ctx, pMonitor, Desktop::FADEOUT_PLANE_WINDOW_TILED, pWorkspace, mode);
+ 
+@@ -395,7 +432,7 @@ void IHyprRenderer::renderWorkspaceWindowsFullscreen(CRenderContext& ctx, PHLMON
+         if (w->isFadingOutUnderFullscreen())
+             continue; // render these over fullscreen so the fade-out is visible
+ 
+-        renderWindow(ctx, w, pMonitor, w->presentation().renderPresentation(mode), time, true, RENDER_PASS_ALL);
++        renderWindow(ctx, w, pMonitor, windowPresentationForScene(ctx, w, mode), time, true, RENDER_PASS_ALL);
+     }
+     renderFadeouts(ctx, pMonitor, Desktop::FADEOUT_PLANE_WINDOW_FLOATING, pWorkspace, mode);
+ 
+@@ -420,8 +457,8 @@ void IHyprRenderer::renderWorkspaceWindowsFullscreen(CRenderContext& ctx, PHLMON
+         if (w->m_monitor == pWorkspace->m_monitor && SPECIAL != w->onSpecialWorkspace())
+             continue;
+ 
+-        if (shouldRenderWindowInScene(w, pMonitor, pWorkspace, mode))
+-            renderWindow(ctx, w, pMonitor, w->presentation().renderPresentation(mode), time,
++        if (shouldRenderWindowInScene(ctx, w, pMonitor, pWorkspace, mode))
++            renderWindow(ctx, w, pMonitor, windowPresentationForScene(ctx, w, mode), time,
+                          Fullscreen::controller()->getFullscreenModes(pWorkspace).internal != Fullscreen::FSMODE_FULLSCREEN, RENDER_PASS_ALL);
+ 
+         if (w->m_workspace != pWorkspace)
+@@ -441,7 +478,7 @@ void IHyprRenderer::renderWorkspaceWindowsFullscreen(CRenderContext& ctx, PHLMON
+         if (shouldSkipWindow)
+             continue;
+ 
+-        if (mode != eSceneMode::MONITOR && !shouldRenderWindowInScene(w, pMonitor, pWorkspace, mode))
++        if (mode != eSceneMode::MONITOR && !shouldRenderWindowInScene(ctx, w, pMonitor, pWorkspace, mode))
+             continue;
+ 
+         const bool mismatchedSpecialWorkspace = w->m_monitor == pWorkspace->m_monitor && SPECIAL != w->onSpecialWorkspace();
+@@ -454,7 +491,7 @@ void IHyprRenderer::renderWorkspaceWindowsFullscreen(CRenderContext& ctx, PHLMON
+         if (specialWorkspaceOnDifferentMonitor)
+             continue; // special on another are rendered as a part of the base pass
+ 
+-        renderWindow(ctx, w, pMonitor, w->presentation().renderPresentation(mode), time, true, RENDER_PASS_ALL);
++        renderWindow(ctx, w, pMonitor, windowPresentationForScene(ctx, w, mode), time, true, RENDER_PASS_ALL);
+     }
+     renderFadeouts(ctx, pMonitor, Desktop::FADEOUT_PLANE_WINDOW_OVER_FULLSCREEN, pWorkspace, mode);
+ }
+@@ -478,7 +515,7 @@ void IHyprRenderer::renderWorkspaceWindows(CRenderContext& ctx, PHLMONITOR pMoni
+         if (isNotRenderable)
+             continue;
+ 
+-        if (!shouldRenderWindowInScene(w, pMonitor, pWorkspace, mode))
++        if (!shouldRenderWindowInScene(ctx, w, pMonitor, pWorkspace, mode))
+             continue;
+ 
+         windows.emplace_back(w);
+@@ -502,12 +539,12 @@ void IHyprRenderer::renderWorkspaceWindows(CRenderContext& ctx, PHLMONITOR pMoni
+         }
+ 
+         // render the bad boy
+-        renderWindow(ctx, w.lock(), pMonitor, w->presentation().renderPresentation(mode), time, true, RENDER_PASS_MAIN);
++        renderWindow(ctx, w.lock(), pMonitor, windowPresentationForScene(ctx, w.lock(), mode), time, true, RENDER_PASS_MAIN);
+         w.reset();
+     }
+ 
+     if (lastWindow)
+-        renderWindow(ctx, lastWindow, pMonitor, lastWindow->presentation().renderPresentation(mode), time, true, RENDER_PASS_MAIN);
++        renderWindow(ctx, lastWindow, pMonitor, windowPresentationForScene(ctx, lastWindow, mode), time, true, RENDER_PASS_MAIN);
+ 
+     lastWindow.reset();
+ 
+@@ -528,7 +565,7 @@ void IHyprRenderer::renderWorkspaceWindows(CRenderContext& ctx, PHLMONITOR pMoni
+             continue;
+ 
+         // render the bad boy
+-        renderWindow(ctx, w.lock(), pMonitor, w->presentation().renderPresentation(mode), time, true, RENDER_PASS_POPUP);
++        renderWindow(ctx, w.lock(), pMonitor, windowPresentationForScene(ctx, w.lock(), mode), time, true, RENDER_PASS_POPUP);
+         w.reset();
+     }
+ 
+@@ -550,7 +587,7 @@ void IHyprRenderer::renderWorkspaceWindows(CRenderContext& ctx, PHLMONITOR pMoni
+             continue; // special on another are rendered as a part of the base pass
+ 
+         // render the bad boy
+-        renderWindow(ctx, w.lock(), pMonitor, w->presentation().renderPresentation(mode), time, true, RENDER_PASS_ALL);
++        renderWindow(ctx, w.lock(), pMonitor, windowPresentationForScene(ctx, w.lock(), mode), time, true, RENDER_PASS_ALL);
+     }
+     renderFadeouts(ctx, pMonitor, Desktop::FADEOUT_PLANE_WINDOW_FLOATING, pWorkspace, mode);
+ }
+@@ -584,6 +621,9 @@ UP<CScopeGuard> IHyprRenderer::redirectPass(CRenderContext& ctx, CRenderPass* pa
+ 
+ void IHyprRenderer::renderWindow(CRenderContext& ctx, PHLWINDOW pWindow, PHLMONITOR pMonitor, const SWindowRenderPresentation& presentation, const Time::steady_tp& time,
+                                  bool decorate, eRenderPassMode mode, bool ignorePosition, bool standalone) {
++    if (ctx.m_renderingScreenShare && pWindow->m_ruleApplicator->hideFromScreenShare().valueOrDefault())
++        return;
++
+     if (pWindow->isHidden() && !standalone)
+         return;
+ 
+@@ -613,7 +653,7 @@ void IHyprRenderer::renderWindow(CRenderContext& ctx, PHLWINDOW pWindow, PHLMONI
+     if (ignorePosition) {
+         renderdata.pos.x = pMonitor->m_position.x;
+         renderdata.pos.y = pMonitor->m_position.y;
+-    } else {
++    } else if (!ctx.m_blockSurfaceFeedback) {
+         pWindow->presentation().setNotResponding(pWindow->isNotResponding());
+     }
+ 
+@@ -985,7 +1025,11 @@ void IHyprRenderer::renderLayer(CRenderContext& ctx, PHLLS pLayer, PHLMONITOR pM
+     if (!pLayer)
+         return;
+ 
+-    if (!pLayer->mapped() || !pLayer->acceptsInput() || !pLayer->alphaNonZero())
++    if (ctx.m_renderingScreenShare && pLayer->m_ruleApplicator->hideFromScreenShare().valueOrDefault())
++        return;
++
++    const auto FADE_ALPHA = ctx.m_renderingScreenShare ? layerAlphaForScreenShare(pLayer, pMonitor) : pLayer->alpha()[LS_ALPHA_FADE]->value();
++    if (!pLayer->mapped() || !pLayer->acceptsInput() || FADE_ALPHA <= 0.F)
+         return;
+ 
+     // skip rendering based on abovelock rule and make sure to not render abovelock layers twice
+@@ -998,7 +1042,7 @@ void IHyprRenderer::renderLayer(CRenderContext& ctx, PHLLS pLayer, PHLMONITOR pM
+     if (*PDIMAROUND && pLayer->m_ruleApplicator->dimAround().valueOrDefault() && !ctx.m_renderingSnapshot && !popups) {
+         CRectPassElement::SRectData data;
+         data.box   = {0, 0, pMonitor->m_transformedSize.x, pMonitor->m_transformedSize.y};
+-        data.color = CHyprColor(0, 0, 0, *PDIMAROUND * pLayer->alpha()[LS_ALPHA_FADE]->value());
++        data.color = CHyprColor(0, 0, 0, *PDIMAROUND * FADE_ALPHA);
+         addPassElement(ctx, makeUnique<CRectPassElement>(data));
+     }
+ 
+@@ -1008,7 +1052,7 @@ void IHyprRenderer::renderLayer(CRenderContext& ctx, PHLLS pLayer, PHLMONITOR pM
+     const auto                       REALSIZ = pLayer->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
+ 
+     CSurfacePassElement::SRenderData renderdata = {pMonitor, time, REALPOS};
+-    renderdata.fadeAlpha                        = pLayer->alpha()[LS_ALPHA_FADE]->value();
++    renderdata.fadeAlpha                        = FADE_ALPHA;
+     renderdata.blur                             = !ctx.m_renderingSnapshot && pLayer->shouldBlur();
+     renderdata.surface                          = pLayer->wlSurface()->resource();
+     renderdata.decorate                         = false;
+@@ -1236,7 +1280,7 @@ void IHyprRenderer::renderAllClientsForWorkspace(CRenderContext& ctx, PHLMONITOR
+     if (preBlurQueued(ctx))
+         addPassElement(ctx, makeUnique<CPreBlurElement>());
+ 
+-    if UNLIKELY /* subjective? */ (Fullscreen::controller()->hasFullscreen(pWorkspace))
++    if UNLIKELY /* subjective? */ (Fullscreen::controller()->hasFullscreen(pWorkspace) && !screenShareHidesFullscreen(ctx.m_renderingScreenShare, pWorkspace))
+         renderWorkspaceWindowsFullscreen(ctx, pMonitor, pWorkspace, time, mode);
+     else
+         renderWorkspaceWindows(ctx, pMonitor, pWorkspace, time, mode);
+@@ -1266,7 +1310,7 @@ void IHyprRenderer::renderAllClientsForWorkspace(CRenderContext& ctx, PHLMONITOR
+             if (ws->m_alpha->value() <= 0.F || ws->type() != Workspace::eWorkspaceType::SPECIAL)
+                 continue;
+ 
+-            if (Fullscreen::controller()->hasFullscreen(ws.lock()))
++            if (Fullscreen::controller()->hasFullscreen(ws.lock()) && !screenShareHidesFullscreen(ctx.m_renderingScreenShare, ws.lock()))
+                 renderWorkspaceWindowsFullscreen(ctx, pMonitor, ws.lock(), time, mode);
+             else
+                 renderWorkspaceWindows(ctx, pMonitor, ws.lock(), time, mode);
+@@ -1281,11 +1325,11 @@ void IHyprRenderer::renderAllClientsForWorkspace(CRenderContext& ctx, PHLMONITOR
+         if (!(w->m_state & WINDOW_STATE_PINNED) || !w->isFloating())
+             continue;
+ 
+-        if (!shouldRenderWindowInScene(w, pMonitor, pWorkspace, mode))
++        if (!shouldRenderWindowInScene(ctx, w, pMonitor, pWorkspace, mode))
+             continue;
+ 
+         // render the bad boy
+-        renderWindow(ctx, w, pMonitor, w->presentation().renderPresentation(mode), time, true, RENDER_PASS_ALL);
++        renderWindow(ctx, w, pMonitor, windowPresentationForScene(ctx, w, mode), time, true, RENDER_PASS_ALL);
+     }
+ 
+     Event::bus()->m_events.render.stage.emit({RENDER_POST_WINDOWS, pMonitor, ctx});
+@@ -1318,6 +1362,10 @@ void IHyprRenderer::renderAllClientsForWorkspace(CRenderContext& ctx, PHLMONITOR
+ }
+ 
+ void IHyprRenderer::renderIME(CRenderContext& ctx, PHLMONITOR pMonitor, const Time::steady_tp& now, const CBox& geometry) {
++    const auto TEXTINPUT = ctx.m_renderingScreenShare ? g_pInputManager->m_relay.getFocusedTextInput() : nullptr;
++    if (TEXTINPUT && surfaceHiddenFromScreenShare(TEXTINPUT->focusedSurface()))
++        return;
++
+     Vector2D translate = {geometry.x, geometry.y};
+     float    scale     = sc<float>(geometry.width) / pMonitor->m_transformedSize.x;
+ 
+@@ -1757,7 +1805,8 @@ void IHyprRenderer::renderLockscreen(CRenderContext& ctx, PHLMONITOR pMonitor, c
+         renderSessionLockMissing(ctx, pMonitor);
+     else if (PSLS) {
+         renderSessionLockSurface(ctx, PSLS, pMonitor, now);
+-        g_pSessionLockManager->onLockscreenRenderedOnMonitor(pMonitor->m_id);
++        if (!ctx.m_blockSurfaceFeedback)
++            g_pSessionLockManager->onLockscreenRenderedOnMonitor(pMonitor->m_id);
+ 
+         // render layers and then their popups for abovelock rule
+         for (auto const& lsl : pMonitor->m_layerSurfaceLayers) {
+@@ -3493,6 +3542,9 @@ void IHyprRenderer::renderFadeouts(CRenderContext& ctx, PHLMONITOR monitor, Desk
+         if (!fadeout || fadeout->monitor() != monitor || fadeout->plane() != plane)
+             continue;
+ 
++        if (ctx.m_renderingScreenShare && fadeout->hiddenFromScreenShare())
++            continue;
++
+         if (mode == eSceneMode::MONITOR) {
+             if (fadeout->workspace() && fadeout->workspace() != workspace)
+                 continue;
+diff --git a/src/render/Renderer.hpp b/src/render/Renderer.hpp
+index 9d1e2196..1ad81867 100644
+--- a/src/render/Renderer.hpp
++++ b/src/render/Renderer.hpp
+@@ -101,6 +101,8 @@ namespace Render {
+         void                            damageMonitor(PHLMONITOR);
+         void                            damageMirrorsWith(PHLMONITOR, const CRegion&);
+         bool                            shouldRenderWindow(PHLWINDOW, PHLMONITOR);
++        bool                            shouldRenderWindowForScreenShare(PHLWINDOW window, PHLMONITOR monitor);
++        float                           layerAlphaForScreenShare(PHLLS layer, PHLMONITOR monitor);
+         bool                            shouldRenderWindow(PHLWINDOW);
+         bool                            shouldRenderMonitor(PHLMONITOR);
+         void                            ensureCursorRenderingMode();
+@@ -340,7 +342,8 @@ namespace Render {
+       private:
+         bool m_renderingMonitor = false;
+ 
+-        bool shouldRenderWindowInScene(PHLWINDOW window, PHLMONITOR monitor, PHLWORKSPACE workspace, eSceneMode mode);
++        bool shouldRenderWindow(PHLWINDOW window, PHLMONITOR monitor, bool ignoreFullscreen);
++        bool shouldRenderWindowInScene(CRenderContext& ctx, PHLWINDOW window, PHLMONITOR monitor, PHLWORKSPACE workspace, eSceneMode mode);
+         void renderMonitorBackground(CRenderContext& ctx, PHLMONITOR pMonitor, const Time::steady_tp& time, PHLWORKSPACE workspace, eSceneMode mode);
+         void renderFadeouts(CRenderContext& ctx, PHLMONITOR monitor, Desktop::eFadeoutPlane plane, PHLWORKSPACE workspace, eSceneMode mode);
+         bool bindOffMain(CRenderContext& ctx);
+diff --git a/src/render/ScreenShare.cpp b/src/render/ScreenShare.cpp
+new file mode 100644
+index 00000000..78d3285b
+--- /dev/null
++++ b/src/render/ScreenShare.cpp
+@@ -0,0 +1,38 @@
++#include "ScreenShare.hpp"
++
++#include "../desktop/view/LayerSurface.hpp"
++#include "../desktop/view/Popup.hpp"
++#include "../desktop/view/window/Window.hpp"
++#include "../protocols/core/Compositor.hpp"
++#include "../protocols/core/Subcompositor.hpp"
++
++bool Render::surfaceHiddenFromScreenShare(SP<CWLSurfaceResource> surface) {
++    if (!surface)
++        return false;
++
++    while (surface && surface->m_role && surface->m_role->role() == SURFACE_ROLE_SUBSURFACE) {
++        const auto ROLE = dynamicPointerCast<CSubsurfaceRole>(surface->m_role);
++        surface         = ROLE && ROLE->m_subsurface ? ROLE->m_subsurface->m_parent.lock() : nullptr;
++    }
++
++    const auto SURFACE = Desktop::View::CWLSurface::fromResource(surface);
++    const auto VIEW    = SURFACE ? SURFACE->view() : nullptr;
++    if (!VIEW)
++        return false;
++
++    if (const auto WINDOW = Desktop::View::CWindow::fromView(VIEW); WINDOW)
++        return WINDOW->m_ruleApplicator->hideFromScreenShare().valueOrDefault();
++
++    if (const auto LAYER = Desktop::View::CLayerSurface::fromView(VIEW); LAYER)
++        return LAYER->m_ruleApplicator->hideFromScreenShare().valueOrDefault();
++
++    const auto POPUP = Desktop::View::CPopup::fromView(VIEW);
++    if (!POPUP)
++        return false;
++
++    if (const auto WINDOW = POPUP->windowOwner(); WINDOW)
++        return WINDOW->m_ruleApplicator->hideFromScreenShare().valueOrDefault();
++
++    const auto LAYER = POPUP->layerOwner();
++    return LAYER && LAYER->m_ruleApplicator->hideFromScreenShare().valueOrDefault();
++}
+diff --git a/src/render/ScreenShare.hpp b/src/render/ScreenShare.hpp
+new file mode 100644
+index 00000000..dc0b4dbc
+--- /dev/null
++++ b/src/render/ScreenShare.hpp
+@@ -0,0 +1,9 @@
++#pragma once
++
++#include "../helpers/memory/Memory.hpp"
++
++class CWLSurfaceResource;
++
++namespace Render {
++    bool surfaceHiddenFromScreenShare(SP<CWLSurfaceResource> surface);
++}
+diff --git a/src/render/WindowRenderPresentation.cpp b/src/render/WindowRenderPresentation.cpp
+index 0c1c1cf1..95ae7826 100644
+--- a/src/render/WindowRenderPresentation.cpp
++++ b/src/render/WindowRenderPresentation.cpp
+@@ -5,6 +5,13 @@ Render::SWindowRenderPresentation Render::resolveWindowPresentation(const SWindo
+     return resolveWindowPresentation(state, eSceneMode::MONITOR);
+ }
+ 
++Render::SWindowRenderPresentation Render::resolveWindowPresentation(SWindowPresentationState state, eSceneMode mode, bool ignoreFullscreen) {
++    if (ignoreFullscreen)
++        state.fullscreen = 1.F;
++
++    return resolveWindowPresentation(state, mode);
++}
++
+ Render::SWindowRenderPresentation Render::resolveWindowPresentation(const SWindowPresentationState& state, eSceneMode mode) {
+     if (mode != eSceneMode::MONITOR) {
+         const auto FADE = state.fade * state.fullscreen * state.layout;
+diff --git a/src/render/WindowRenderPresentation.hpp b/src/render/WindowRenderPresentation.hpp
+index 11d2e16e..fabd2848 100644
+--- a/src/render/WindowRenderPresentation.hpp
++++ b/src/render/WindowRenderPresentation.hpp
+@@ -34,4 +34,5 @@ namespace Render {
+ 
+     SWindowRenderPresentation resolveWindowPresentation(const SWindowPresentationState& state);
+     SWindowRenderPresentation resolveWindowPresentation(const SWindowPresentationState& state, eSceneMode mode);
++    SWindowRenderPresentation resolveWindowPresentation(SWindowPresentationState state, eSceneMode mode, bool ignoreFullscreen);
+ }
+diff --git a/src/render/pass/SurfacePassElement.cpp b/src/render/pass/SurfacePassElement.cpp
+index a0ca5941..98dd1667 100644
+--- a/src/render/pass/SurfacePassElement.cpp
++++ b/src/render/pass/SurfacePassElement.cpp
+@@ -179,7 +179,9 @@ CRegion CSurfacePassElement::visibleRegion(Render::CRenderContext& ctx, bool& ca
+ }
+ 
+ void CSurfacePassElement::discard(Render::CRenderContext& ctx) {
+-    if (!ctx.m_blockSurfaceFeedback) {
++    if (ctx.m_renderingScreenShare)
++        m_data.surface->frame(m_data.when);
++    else if (!ctx.m_blockSurfaceFeedback) {
+         LOG(Log::TRACE, "discard for invisible surface");
+         m_data.surface->presentFeedback(m_data.when, m_data.pMonitor->m_self.lock(), true);
+     }
+diff --git a/tests/desktop/rule/ScreenShare.cpp b/tests/desktop/rule/ScreenShare.cpp
+new file mode 100644
+index 00000000..1a3bdf4d
+--- /dev/null
++++ b/tests/desktop/rule/ScreenShare.cpp
+@@ -0,0 +1,39 @@
++#include <desktop/rule/windowRule/WindowRule.hpp>
++#include <desktop/rule/layerRule/LayerRule.hpp>
++#include <render/ScreenShare.hpp>
++
++#include <gtest/gtest.h>
++
++using namespace Desktop::Rule;
++
++TEST(ScreenShareRules, WindowRuleParsesIndependentBooleanEffects) {
++    CWindowRule rule;
++    ASSERT_TRUE(rule.addEffect(WINDOW_RULE_EFFECT_HIDE_FROM_SCREEN_SHARE, "on"));
++    ASSERT_TRUE(rule.addEffect(WINDOW_RULE_EFFECT_NO_SCREEN_SHARE, "off"));
++    ASSERT_EQ(rule.effects().size(), 2U);
++    EXPECT_TRUE(std::get<bool>(rule.effects()[0].value));
++    EXPECT_FALSE(std::get<bool>(rule.effects()[1].value));
++    EXPECT_EQ(windowEffects()->get("hide_from_screen_share"), WINDOW_RULE_EFFECT_HIDE_FROM_SCREEN_SHARE);
++
++    CWindowRule disabled;
++    ASSERT_TRUE(disabled.addEffect(WINDOW_RULE_EFFECT_HIDE_FROM_SCREEN_SHARE, "off"));
++    EXPECT_FALSE(std::get<bool>(disabled.effects()[0].value));
++}
++
++TEST(ScreenShareRules, LayerRuleParsesIndependentBooleanEffects) {
++    CLayerRule rule;
++    ASSERT_TRUE(rule.addEffect(LAYER_RULE_EFFECT_HIDE_FROM_SCREEN_SHARE, "on"));
++    ASSERT_TRUE(rule.addEffect(LAYER_RULE_EFFECT_NO_SCREEN_SHARE, "off"));
++    ASSERT_EQ(rule.effects().size(), 2U);
++    EXPECT_TRUE(std::get<bool>(rule.effects()[0].value));
++    EXPECT_FALSE(std::get<bool>(rule.effects()[1].value));
++    EXPECT_EQ(layerEffects()->get("hide_from_screen_share"), LAYER_RULE_EFFECT_HIDE_FROM_SCREEN_SHARE);
++
++    CLayerRule disabled;
++    ASSERT_TRUE(disabled.addEffect(LAYER_RULE_EFFECT_HIDE_FROM_SCREEN_SHARE, "off"));
++    EXPECT_FALSE(std::get<bool>(disabled.effects()[0].value));
++}
++
++TEST(ScreenShareRules, MissingSurfaceIsNotPrivate) {
++    EXPECT_FALSE(Render::surfaceHiddenFromScreenShare(nullptr));
++}
+diff --git a/tests/render/Context.cpp b/tests/render/Context.cpp
+index 3246d603..e132fae5 100644
+--- a/tests/render/Context.cpp
++++ b/tests/render/Context.cpp
+@@ -458,6 +458,7 @@ namespace Render {
+             context.m_backdropCaptures.emplace_back();
+             context.m_blockSurfaceFeedback = true;
+             context.m_renderingSnapshot    = true;
++            context.m_renderingScreenShare = true;
+             context.m_swapchainAcquired    = true;
+             context.m_gl                   = {.fakeFrame = true, .offloadedFramebuffer = true, .applyFinalShader = true};
+ 
+@@ -484,6 +485,7 @@ namespace Render {
+             EXPECT_TRUE(context.m_backdropCaptures.empty());
+             EXPECT_FALSE(context.m_blockSurfaceFeedback);
+             EXPECT_FALSE(context.m_renderingSnapshot);
++            EXPECT_FALSE(context.m_renderingScreenShare);
+             EXPECT_FALSE(context.m_swapchainAcquired);
+             EXPECT_FALSE(context.m_gl.fakeFrame);
+             EXPECT_FALSE(context.m_gl.offloadedFramebuffer);
+diff --git a/tests/render/WindowRenderPresentation.cpp b/tests/render/WindowRenderPresentation.cpp
+index dcc0c99c..e25b32ed 100644
+--- a/tests/render/WindowRenderPresentation.cpp
++++ b/tests/render/WindowRenderPresentation.cpp
+@@ -10,6 +10,40 @@
+ using namespace Render;
+ using Hyprutils::Math::Vector2D;
+ 
++TEST(WindowRenderPresentation, ScreenShareRevealsWindowsBehindPrivateFullscreenWithoutChangingMonitorState) {
++    const SWindowPresentationState state{
++        .workspaceOffset          = {37, 23},
++        .workspaceAlpha           = 0.5F,
++        .fade                     = 0.8F,
++        .active                   = 0.75F,
++        .fullscreen               = 0.F,
++        .layout                   = 0.6F,
++        .moveFromWorkspace        = 0.9F,
++        .hasWorkspacePresentation = true,
++    };
++
++    const auto captured = resolveWindowPresentation(state, eSceneMode::MONITOR, true);
++    EXPECT_TRUE(captured.alphaVisible);
++    EXPECT_EQ(captured.workspaceOffset, state.workspaceOffset);
++    EXPECT_FLOAT_EQ(captured.alpha, 0.75F);
++    EXPECT_FLOAT_EQ(captured.fadeAlpha, 0.8F * 0.6F * 0.5F * 0.9F);
++
++    const auto displayed = resolveWindowPresentation(state, eSceneMode::MONITOR);
++    EXPECT_FALSE(displayed.alphaVisible);
++    EXPECT_FLOAT_EQ(displayed.fadeAlpha, 0.F);
++    EXPECT_FLOAT_EQ(state.fullscreen, 0.F);
++    EXPECT_EQ(resolveWindowPresentation(state, eSceneMode::MONITOR, false), displayed);
++}
++
++TEST(WindowRenderPresentation, ScreenShareRetainsOtherVisibilityChannelsBehindPrivateFullscreen) {
++    SWindowPresentationState state{.fade = 0.F, .fullscreen = 0.F};
++    EXPECT_FALSE(resolveWindowPresentation(state, eSceneMode::MONITOR, true).alphaVisible);
++    state = {.fullscreen = 0.F, .layout = 0.F};
++    EXPECT_FALSE(resolveWindowPresentation(state, eSceneMode::MONITOR, true).alphaVisible);
++    state = {.fullscreen = 0.F, .moveFromWorkspace = 0.F};
++    EXPECT_FALSE(resolveWindowPresentation(state, eSceneMode::MONITOR, true).alphaVisible);
++}
++
+ TEST(WindowRenderPresentation, MonitorPreservesWorkspaceAndTransferAlphaRules) {
+     for (const bool present : {false, true}) {
+         for (const bool pinned : {false, true}) {
+-- 
+2.56.0
+

@@ -181,6 +181,7 @@ class CSeatManager {
     };
 
     std::vector<SP<SSeatResourceContainer>> m_seatResources;
+    WP<CWLSurfaceResource>                  m_preservedKeyboardFocus;
     void                                    onNewSeatResource(SP<CWLSeatResource> resource);
     SP<SSeatResourceContainer>              containerForResource(SP<CWLSeatResource> seatResource);
 

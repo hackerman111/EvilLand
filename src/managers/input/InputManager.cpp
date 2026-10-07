@@ -900,7 +900,7 @@ void CInputManager::processMouseDownNormal(const IPointer::SButtonEvent& e, SP<I
                 break;
 
             if ((g_pSeatManager->m_mouse.expired() || !isConstrained()) /* No constraints */
-                && (w && Desktop::focusState()->window() != w) /* window should change */) {
+                && (w && Desktop::focusState()->inputWindow() != w) /* input window should change */) {
                 // a bit hacky
                 // if we only pressed one button, allow us to refocus. m_lCurrentlyHeldButtons.size() > 0 will stick the focus
                 if (m_currentlyHeldButtons.size() == 1) {

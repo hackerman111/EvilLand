@@ -10,6 +10,40 @@
 using namespace Render;
 using Hyprutils::Math::Vector2D;
 
+TEST(WindowRenderPresentation, ScreenShareRevealsWindowsBehindPrivateFullscreenWithoutChangingMonitorState) {
+    const SWindowPresentationState state{
+        .workspaceOffset          = {37, 23},
+        .workspaceAlpha           = 0.5F,
+        .fade                     = 0.8F,
+        .active                   = 0.75F,
+        .fullscreen               = 0.F,
+        .layout                   = 0.6F,
+        .moveFromWorkspace        = 0.9F,
+        .hasWorkspacePresentation = true,
+    };
+
+    const auto captured = resolveWindowPresentation(state, eSceneMode::MONITOR, true);
+    EXPECT_TRUE(captured.alphaVisible);
+    EXPECT_EQ(captured.workspaceOffset, state.workspaceOffset);
+    EXPECT_FLOAT_EQ(captured.alpha, 0.75F);
+    EXPECT_FLOAT_EQ(captured.fadeAlpha, 0.8F * 0.6F * 0.5F * 0.9F);
+
+    const auto displayed = resolveWindowPresentation(state, eSceneMode::MONITOR);
+    EXPECT_FALSE(displayed.alphaVisible);
+    EXPECT_FLOAT_EQ(displayed.fadeAlpha, 0.F);
+    EXPECT_FLOAT_EQ(state.fullscreen, 0.F);
+    EXPECT_EQ(resolveWindowPresentation(state, eSceneMode::MONITOR, false), displayed);
+}
+
+TEST(WindowRenderPresentation, ScreenShareRetainsOtherVisibilityChannelsBehindPrivateFullscreen) {
+    SWindowPresentationState state{.fade = 0.F, .fullscreen = 0.F};
+    EXPECT_FALSE(resolveWindowPresentation(state, eSceneMode::MONITOR, true).alphaVisible);
+    state = {.fullscreen = 0.F, .layout = 0.F};
+    EXPECT_FALSE(resolveWindowPresentation(state, eSceneMode::MONITOR, true).alphaVisible);
+    state = {.fullscreen = 0.F, .moveFromWorkspace = 0.F};
+    EXPECT_FALSE(resolveWindowPresentation(state, eSceneMode::MONITOR, true).alphaVisible);
+}
+
 TEST(WindowRenderPresentation, MonitorPreservesWorkspaceAndTransferAlphaRules) {
     for (const bool present : {false, true}) {
         for (const bool pinned : {false, true}) {

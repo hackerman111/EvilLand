@@ -17,7 +17,7 @@ add_executable(hyprtester ${SRCFILES})
 add_custom_command(
   TARGET hyprtester
   POST_BUILD
-  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/plugin/build.sh "${LUA_INCLUDE_DIRS}"
+  COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/plugin/build.sh "${LUA_INCLUDE_DIRS}"
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/plugin)
 
 target_link_libraries(hyprtester PUBLIC PkgConfig::hyprtester_deps)
@@ -108,6 +108,7 @@ protocolnew("staging/xdg-activation" "xdg-activation-v1" false)
 protocolnew("unstable/keyboard-shortcuts-inhibit" "keyboard-shortcuts-inhibit-unstable-v1" false)
 protocolnew("../protocols" "wlr-foreign-toplevel-management-unstable-v1" true)
 protocolnew("${HYPRLAND_PROTOCOLS}/protocols" "hyprland-toplevel-export-v1" true)
+protocolnew("../protocols" "wlr-screencopy-unstable-v1" true)
 
 clientNew("pointer-warp" PROTOS "pointer-warp-v1" "xdg-shell")
 clientNew("surface-scale-transform" PROTOS "fractional-scale-v1" "xdg-shell")
@@ -121,4 +122,4 @@ clientNew("fullscreen-with-monitor" PROTOS "xdg-shell")
 clientNew("xdg-initial-maximize" PROTOS "xdg-shell")
 clientNew("popup-render" PROTOS "xdg-shell")
 clientNew("wlr-foreign-toplevel" PROTOS "wlr-foreign-toplevel-management-unstable-v1")
-clientNew("toplevel-capture" PROTOS "wlr-foreign-toplevel-management-unstable-v1" "hyprland-toplevel-export-v1")
+clientNew("toplevel-capture" PROTOS "wlr-foreign-toplevel-management-unstable-v1" "hyprland-toplevel-export-v1" "wlr-screencopy-unstable-v1")

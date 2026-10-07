@@ -254,6 +254,10 @@ Render::SWindowRenderPresentation CWindowPresentation::renderPresentation(Render
     return Render::resolveWindowPresentation(renderPresentationState(dynamicPointerCast<Workspace::CWorkspacePresentable>(m_window.m_workspace)), mode);
 }
 
+Render::SWindowRenderPresentation CWindowPresentation::renderPresentation(Render::eSceneMode mode, bool ignoreFullscreen) const {
+    return Render::resolveWindowPresentation(renderPresentationState(dynamicPointerCast<Workspace::CWorkspacePresentable>(m_window.m_workspace)), mode, ignoreFullscreen);
+}
+
 Render::SWindowRenderPresentation CWindowPresentation::renderPresentation(const SP<Workspace::CWorkspacePresentable>& presentation) const {
     return Render::resolveWindowPresentation(renderPresentationState(presentation));
 }

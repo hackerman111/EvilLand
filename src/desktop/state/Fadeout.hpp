@@ -71,6 +71,7 @@ namespace Desktop {
         virtual bool                  done() const      = 0;
         virtual SFadeoutRenderEffects effects() const;
         virtual SFadeoutSource        source() const;
+        bool                          hiddenFromScreenShare() const;
 
       protected:
         IFadeout() = default;
@@ -78,5 +79,8 @@ namespace Desktop {
         SP<Render::IFramebuffer> m_framebuffer;
         PHLWORKSPACEREF          m_workspace;
         SFadeoutRenderEffects    m_effects;
+        bool                     m_hiddenFromScreenShare = false;
+        PHLWINDOWREF             m_screenShareWindow;
+        PHLLSREF                 m_screenShareLayer;
     };
 }

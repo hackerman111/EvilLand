@@ -64,6 +64,7 @@ namespace Desktop::View {
         bool                                              opaque(const Render::SWindowRenderPresentation& presentation) const;
         Render::SWindowRenderPresentation                 renderPresentation() const;
         Render::SWindowRenderPresentation                 renderPresentation(Render::eSceneMode mode) const;
+        Render::SWindowRenderPresentation                 renderPresentation(Render::eSceneMode mode, bool ignoreFullscreen) const;
         Render::SWindowRenderPresentation                 renderPresentation(const SP<Workspace::CWorkspacePresentable>& presentation) const;
         float                                             rounding();
         float                                             roundingPower();

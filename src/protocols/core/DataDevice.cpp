@@ -13,6 +13,7 @@
 #include "../../pointer/cursor/CursorShapeOverrideController.hpp"
 #include "../../output/Monitor.hpp"
 #include "../../render/Renderer.hpp"
+#include "../../render/ScreenShare.hpp"
 #include "../../xwayland/Dnd.hpp"
 #include "../../event/EventBus.hpp"
 using namespace Hyprutils::OS;
@@ -827,6 +828,9 @@ void CWLDataDeviceProtocol::abortDrag() {
 }
 
 void CWLDataDeviceProtocol::renderDND(Render::CRenderContext& ctx, PHLMONITOR pMonitor, const Time::steady_tp& when) {
+    if (ctx.m_renderingScreenShare && Render::surfaceHiddenFromScreenShare(m_dnd.originSurface.lock()))
+        return;
+
     if (!m_dnd.dndSurface || !m_dnd.dndSurface->m_current.texture)
         return;
 
@@ -842,6 +846,9 @@ void CWLDataDeviceProtocol::renderDND(Render::CRenderContext& ctx, PHLMONITOR pM
     data.tex = m_dnd.dndSurface->m_current.texture;
     data.box = box;
     g_pHyprRenderer->addPassElement(ctx, makeUnique<CTexPassElement>(std::move(data)));
+
+    if (ctx.m_blockSurfaceFeedback)
+        return;
 
     CBox damageBox = CBox{surfacePos, m_dnd.dndSurface->m_current.size}.expand(5);
     g_pHyprRenderer->damageBox(damageBox);

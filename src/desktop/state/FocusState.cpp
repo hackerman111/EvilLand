@@ -25,7 +25,127 @@ SP<CFocusState> Desktop::focusState() {
     return state;
 }
 
-Desktop::CFocusState::CFocusState() = default;
+Desktop::CFocusState::CFocusState() {
+    m_windowClose = Event::bus()->m_events.window.close.listen([this](const auto& window) {
+        if (window == m_guardWindow) {
+            m_guardWindow.reset();
+            if (window == m_preservedFocusWindow) {
+                releasePreservedFocus();
+                g_pSeatManager->setKeyboardFocus(g_pSeatManager->m_state.keyboardFocus.lock());
+            }
+            return;
+        }
+
+        if (const auto GUARD = guardedWindow(); GUARD && window == m_focusWindow)
+            fullWindowFocus(GUARD, FOCUS_REASON_OTHER);
+    });
+}
+
+static bool canPreserveFocus(PHLWINDOW target, PHLWINDOW previous, SP<CWLSurfaceResource> previousSurface) {
+    if (!validMapped(target) || !validMapped(previous) || target == previous || !previousSurface || previous->isHidden() || !previous->m_workspace)
+        return false;
+
+    if (target->backend().isX11() || previous->backend().isX11() || g_pSessionLockManager->isSessionLocked() || !g_pInputManager->m_exclusiveKeyboardLSes.empty() ||
+        (g_pSeatManager->m_seatGrab && g_pSeatManager->m_seatGrab->m_keyboard))
+        return false;
+
+    return target->m_ruleApplicator->hideFromScreenShare().valueOrDefault() && target->m_ruleApplicator->preservePreviousFocus().valueOrDefault() &&
+        previousSurface->client() == previous->wlSurface()->resource()->client() && previousSurface->client() != target->wlSurface()->resource()->client();
+}
+
+void CFocusState::updatePreservedFocus(PHLWINDOW nextWindow) {
+    const auto PREVIOUS = m_preservedFocusWindow ? m_preservedFocusWindow.lock() : m_focusWindow.lock();
+    const auto SURFACE  = m_preservedFocusSurface ? m_preservedFocusSurface.lock() : g_pSeatManager->m_state.keyboardFocus.lock();
+
+    if (!canPreserveFocus(nextWindow, PREVIOUS, SURFACE)) {
+        releasePreservedFocus(nextWindow);
+        return;
+    }
+
+    m_preservedFocusWindow  = PREVIOUS;
+    m_preservedFocusSurface = SURFACE;
+    PREVIOUS->setSuspended(false);
+}
+
+SP<CWLSurfaceResource> CFocusState::preservedSurface() {
+    return m_preservedFocusSurface.lock();
+}
+
+PHLWINDOW CFocusState::preservedWindow() {
+    return m_preservedFocusWindow.lock();
+}
+
+void CFocusState::releasePreservedFocus(PHLWINDOW nextWindow) {
+    const auto PREVIOUS = m_preservedFocusWindow.lock();
+    m_preservedFocusWindow.reset();
+    m_preservedFocusSurface.reset();
+
+    if (!validMapped(PREVIOUS))
+        return;
+
+    PREVIOUS->setSuspended(PREVIOUS->isHidden() || !PREVIOUS->m_workspace || !PREVIOUS->m_workspace->visible());
+    if (PREVIOUS != nextWindow && PREVIOUS != m_focusWindow)
+        g_pXWaylandManager->activateWindow(PREVIOUS, false);
+}
+
+void CFocusState::refreshPreservedFocus() {
+    refreshFocusGuard();
+
+    if (const auto GUARD = guardedWindow(); GUARD && !allowsGuardedFocus(m_focusWindow.lock())) {
+        fullWindowFocus(GUARD, FOCUS_REASON_OTHER);
+        return;
+    }
+
+    if (!m_preservedFocusWindow || !m_focusWindow || canPreserveFocus(m_focusWindow.lock(), m_preservedFocusWindow.lock(), m_preservedFocusSurface.lock()))
+        return;
+
+    releasePreservedFocus();
+    g_pSeatManager->setKeyboardFocus(g_pSeatManager->m_state.keyboardFocus.lock());
+}
+
+PHLWINDOW CFocusState::guardedWindow() const {
+    const auto GUARD = m_guardWindow.lock();
+    if (!validMapped(GUARD) || !GUARD->backend().isMapped() || GUARD->backend().isX11() || GUARD->isHidden() || !GUARD->m_ruleApplicator->focusGuard().valueOrDefault() ||
+        !GUARD->m_workspace || !GUARD->m_workspace->visible() || !GUARD->m_monitor || !GUARD->m_monitor->enabled() || g_pSessionLockManager->isSessionLocked())
+        return nullptr;
+
+    return GUARD;
+}
+
+PHLWINDOW CFocusState::inputWindow() {
+    return m_focusWindow.lock();
+}
+
+void CFocusState::refreshFocusGuard() {
+    const auto PREVIOUS = m_guardWindow.lock();
+    if (PREVIOUS && !guardedWindow()) {
+        m_guardWindow.reset();
+        if (validMapped(PREVIOUS) && PREVIOUS->backend().isMapped() && PREVIOUS == m_preservedFocusWindow && !g_pSessionLockManager->isSessionLocked()) {
+            fullWindowFocus(PREVIOUS, FOCUS_REASON_OTHER);
+            return;
+        }
+    }
+
+    const auto CURRENT = m_focusWindow.lock();
+    if (m_guardWindow || !validMapped(CURRENT) || CURRENT->backend().isX11() || !CURRENT->m_ruleApplicator->focusGuard().valueOrDefault())
+        return;
+
+    const auto KEYBOARD = g_pSeatManager->m_state.keyboardFocus.lock();
+    if (KEYBOARD && KEYBOARD->client() == CURRENT->wlSurface()->resource()->client())
+        m_guardWindow = CURRENT;
+}
+
+bool CFocusState::allowsGuardedFocus(PHLWINDOW nextWindow) {
+    const auto GUARD = guardedWindow();
+    if (!GUARD || nextWindow == GUARD)
+        return true;
+
+    if (!validMapped(nextWindow) || nextWindow->isHidden() || !nextWindow->isFloating() || nextWindow->m_workspace != GUARD->m_workspace ||
+        nextWindow->m_monitor != GUARD->m_monitor || nextWindow->m_ruleApplicator->noFocus().valueOrDefault())
+        return false;
+
+    return canPreserveFocus(nextWindow, GUARD, m_preservedFocusSurface ? m_preservedFocusSurface.lock() : GUARD->wlSurface()->resource());
+}
 
 struct SFullscreenWorkspaceFocusResult {
     PHLWINDOW overrideFocusWindow = nullptr;
@@ -74,6 +194,9 @@ static SFullscreenWorkspaceFocusResult onFullscreenWorkspaceFocusWindow(PHLWINDO
 }
 
 void CFocusState::fullWindowFocus(PHLWINDOW pWindow, eFocusReason reason, SP<CWLSurfaceResource> surface, bool forceFSCycle) {
+    if (!allowsGuardedFocus(pWindow))
+        return;
+
     if (pWindow) {
         if (!pWindow->m_workspace)
             return;
@@ -99,6 +222,9 @@ void CFocusState::fullWindowFocus(PHLWINDOW pWindow, eFocusReason reason, SP<CWL
 void CFocusState::rawWindowFocus(PHLWINDOW pWindow, eFocusReason reason, SP<CWLSurfaceResource> surface) {
     static auto PFOLLOWMOUSE        = CConfigValue<Config::INTEGER>("input:follow_mouse");
     static auto PSPECIALFALLTHROUGH = CConfigValue<Config::INTEGER>("input:special_fallthrough");
+
+    if (!allowsGuardedFocus(pWindow))
+        return;
 
     if (pWindow == m_focusWindow && surface == m_focusSurface && m_focusSurface)
         return;
@@ -129,10 +255,11 @@ void CFocusState::rawWindowFocus(PHLWINDOW pWindow, eFocusReason reason, SP<CWLS
 
     if (!pWindow || !validMapped(pWindow)) {
 
-        if (m_focusWindow.expired() && !pWindow)
+        if (m_focusWindow.expired() && !pWindow && !m_preservedFocusSurface)
             return;
 
         const auto PLASTWINDOW = m_focusWindow.lock();
+        releasePreservedFocus();
         m_focusWindow.reset();
 
         if (PLASTWINDOW && PLASTWINDOW->mapped()) {
@@ -183,9 +310,13 @@ void CFocusState::rawWindowFocus(PHLWINDOW pWindow, eFocusReason reason, SP<CWLS
     if (PMONITOR && !(pWindow->m_state & Desktop::View::WINDOW_STATE_PINNED))
         rawMonitorFocus(PMONITOR);
 
+    const auto PREVIOUS_PUBLIC_WINDOW = window();
+    updatePreservedFocus(pWindow);
+
     const auto PLASTWINDOW = m_focusWindow.lock();
     m_focusWindow          = pWindow;
-    pWindow->m_workspace->rememberFocusedWindow(pWindow);
+    if (!guardedWindow())
+        pWindow->m_workspace->rememberFocusedWindow(pWindow);
 
     /* If special fallthrough is enabled, this behavior will be disabled, as I have no better idea of nicely tracking which
        window focuses are "via keybinds" and which ones aren't. */
@@ -198,7 +329,7 @@ void CFocusState::rawWindowFocus(PHLWINDOW pWindow, eFocusReason reason, SP<CWLS
         PLASTWINDOW->m_ruleApplicator->propertiesChanged(Rule::RULE_PROP_FOCUS);
         PLASTWINDOW->presentation().refreshValues();
 
-        if (!pWindow->backend().isX11() || !pWindow->backend().traits().overrideRedirect)
+        if (PLASTWINDOW != m_preservedFocusWindow && (!pWindow->backend().isX11() || !pWindow->backend().traits().overrideRedirect))
             g_pXWaylandManager->activateWindow(PLASTWINDOW, false);
     }
 
@@ -214,11 +345,13 @@ void CFocusState::rawWindowFocus(PHLWINDOW pWindow, eFocusReason reason, SP<CWLS
     if (pWindow->m_hints & Desktop::View::WINDOW_HINT_URGENT)
         pWindow->m_hints &= ~Desktop::View::WINDOW_HINT_URGENT;
 
-    // Send an event
-    IPC::Socket2::sock()->postEvent({.event = "activewindow", .data = std::format("{},{}", pWindow->metadata().appID(), pWindow->metadata().title())});
-    IPC::Socket2::sock()->postEvent({.event = "activewindowv2", .data = std::format("{:x}", rc<uintptr_t>(pWindow.get()))});
-
-    Event::bus()->m_events.window.active.emit(pWindow, reason);
+    refreshFocusGuard();
+    const auto PUBLIC_WINDOW = window();
+    if (!guardedWindow() || PUBLIC_WINDOW != PREVIOUS_PUBLIC_WINDOW) {
+        IPC::Socket2::sock()->postEvent({.event = "activewindow", .data = std::format("{},{}", PUBLIC_WINDOW->metadata().appID(), PUBLIC_WINDOW->metadata().title())});
+        IPC::Socket2::sock()->postEvent({.event = "activewindowv2", .data = std::format("{:x}", rc<uintptr_t>(PUBLIC_WINDOW.get()))});
+        Event::bus()->m_events.window.active.emit(PUBLIC_WINDOW, reason);
+    }
 
     g_pInputManager->recheckIdleInhibitorStatus();
 
@@ -230,6 +363,33 @@ void CFocusState::rawWindowFocus(PHLWINDOW pWindow, eFocusReason reason, SP<CWLS
 }
 
 void CFocusState::rawSurfaceFocus(SP<CWLSurfaceResource> pSurface, PHLWINDOW pWindowOwner) {
+    if (g_pSessionLockManager->isSessionLocked())
+        m_guardWindow.reset();
+
+    if (const auto GUARD = guardedWindow()) {
+        if (!pSurface || (pWindowOwner && !allowsGuardedFocus(pWindowOwner)))
+            return;
+
+        if (pWindowOwner && pWindowOwner != m_focusWindow) {
+            rawWindowFocus(pWindowOwner, FOCUS_REASON_OTHER, pSurface);
+            return;
+        }
+
+        if (!pWindowOwner) {
+            const auto INPUT = inputWindow();
+            if (pSurface->client() == GUARD->wlSurface()->resource()->client()) {
+                if (INPUT != GUARD) {
+                    rawWindowFocus(GUARD, FOCUS_REASON_OTHER, pSurface);
+                    return;
+                }
+                pWindowOwner = GUARD;
+            } else if (validMapped(INPUT) && allowsGuardedFocus(INPUT) && pSurface->client() == INPUT->wlSurface()->resource()->client())
+                pWindowOwner = INPUT;
+            else
+                return;
+        }
+    }
+
     if (g_pSeatManager->m_state.keyboardFocus == pSurface || (pWindowOwner && g_pSeatManager->m_state.keyboardFocus == pWindowOwner->wlSurface()->resource()))
         return; // Don't focus when already focused on this.
 
@@ -240,6 +400,9 @@ void CFocusState::rawSurfaceFocus(SP<CWLSurfaceResource> pSurface, PHLWINDOW pWi
         LOG(Log::DEBUG, "surface {:x} won't receive kb focus because grab rejected it", rc<uintptr_t>(pSurface.get()));
         return;
     }
+
+    if (!pWindowOwner)
+        releasePreservedFocus();
 
     // Unfocus last surface if should
     if (m_focusSurface && !pWindowOwner)
@@ -269,6 +432,9 @@ void CFocusState::rawSurfaceFocus(SP<CWLSurfaceResource> pSurface, PHLWINDOW pWi
 }
 
 void CFocusState::rawMonitorFocus(PHLMONITOR pMonitor) {
+    if (const auto GUARD = guardedWindow(); GUARD && GUARD->m_monitor != pMonitor)
+        return;
+
     if (m_focusMonitor == pMonitor)
         return;
 
@@ -290,10 +456,16 @@ void CFocusState::rawMonitorFocus(PHLMONITOR pMonitor) {
 }
 
 SP<CWLSurfaceResource> CFocusState::surface() {
+    if (const auto GUARD = guardedWindow(); GUARD && m_focusWindow != GUARD)
+        return m_preservedFocusSurface.lock();
+
     return m_focusSurface.lock();
 }
 
 PHLWINDOW CFocusState::window() {
+    if (const auto GUARD = guardedWindow())
+        return GUARD;
+
     return m_focusWindow.lock();
 }
 
@@ -302,11 +474,17 @@ PHLMONITOR CFocusState::monitor() {
 }
 
 void CFocusState::resetWindowFocus() {
+    if (guardedWindow())
+        return;
+
     m_focusWindow.reset();
     m_focusSurface.reset();
 }
 
 bool CFocusState::isWindowActive(PHLWINDOW pWindow) const {
+    if (const auto GUARD = guardedWindow())
+        return pWindow == GUARD;
+
     const auto FOCUSWINDOW  = m_focusWindow.lock();
     const auto FOCUSSURFACE = m_focusSurface.lock();
 

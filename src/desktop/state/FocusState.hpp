@@ -49,11 +49,26 @@ namespace Desktop {
 
         bool                   isWindowActive(PHLWINDOW w) const;
 
+        SP<CWLSurfaceResource> preservedSurface();
+        PHLWINDOW              preservedWindow();
+        void                   releasePreservedFocus(PHLWINDOW nextWindow = nullptr);
+        void                   refreshPreservedFocus();
+
+        PHLWINDOW              guardedWindow() const;
+        PHLWINDOW              inputWindow();
+
         SP<CWLSurfaceResource> surface();
         PHLWINDOW              window();
         PHLMONITOR             monitor();
 
       private:
+        void                   updatePreservedFocus(PHLWINDOW nextWindow);
+        void                   refreshFocusGuard();
+        bool                   allowsGuardedFocus(PHLWINDOW nextWindow);
+
+        PHLWINDOWREF           m_guardWindow;
+        PHLWINDOWREF           m_preservedFocusWindow;
+        WP<CWLSurfaceResource> m_preservedFocusSurface;
         WP<CWLSurfaceResource> m_focusSurface;
         PHLWINDOWREF           m_focusWindow;
         PHLMONITORREF          m_focusMonitor;

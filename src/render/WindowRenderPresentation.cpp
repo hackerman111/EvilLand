@@ -5,6 +5,13 @@ Render::SWindowRenderPresentation Render::resolveWindowPresentation(const SWindo
     return resolveWindowPresentation(state, eSceneMode::MONITOR);
 }
 
+Render::SWindowRenderPresentation Render::resolveWindowPresentation(SWindowPresentationState state, eSceneMode mode, bool ignoreFullscreen) {
+    if (ignoreFullscreen)
+        state.fullscreen = 1.F;
+
+    return resolveWindowPresentation(state, mode);
+}
+
 Render::SWindowRenderPresentation Render::resolveWindowPresentation(const SWindowPresentationState& state, eSceneMode mode) {
     if (mode != eSceneMode::MONITOR) {
         const auto FADE = state.fade * state.fullscreen * state.layout;

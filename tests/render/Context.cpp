@@ -458,6 +458,7 @@ namespace Render {
             context.m_backdropCaptures.emplace_back();
             context.m_blockSurfaceFeedback = true;
             context.m_renderingSnapshot    = true;
+            context.m_renderingScreenShare = true;
             context.m_swapchainAcquired    = true;
             context.m_gl                   = {.fakeFrame = true, .offloadedFramebuffer = true, .applyFinalShader = true};
 
@@ -484,6 +485,7 @@ namespace Render {
             EXPECT_TRUE(context.m_backdropCaptures.empty());
             EXPECT_FALSE(context.m_blockSurfaceFeedback);
             EXPECT_FALSE(context.m_renderingSnapshot);
+            EXPECT_FALSE(context.m_renderingScreenShare);
             EXPECT_FALSE(context.m_swapchainAcquired);
             EXPECT_FALSE(context.m_gl.fakeFrame);
             EXPECT_FALSE(context.m_gl.offloadedFramebuffer);
