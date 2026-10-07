@@ -1,150 +1,90 @@
-<div align = center>
+<div align="center">
 
-<img src="https://raw.githubusercontent.com/hyprwm/Hyprland/main/assets/header.svg" width="750" height="300" alt="banner">
+<img src="./assets/header.svg" width="640" alt="Hyprland">
 
-<br>
+# EvilLand
 
-[![Badge Workflow]][Workflow]
-[![Badge License]][License] 
-![Badge Language] 
-[![Badge Pull Requests]][Pull Requests] 
-[![Badge Issues]][Issues] 
-![Badge Hi Mom]<br>
+**A Hyprland fork with custom screen sharing and focus controls.**
 
-<br>
+Dynamic tiling · Wayland · Custom window rules
 
-Hyprland is a 100% independent, dynamic tiling Wayland compositor that doesn't sacrifice on its looks.
+[![Hyprland fork](https://img.shields.io/badge/Hyprland-fork-58c4e8?style=for-the-badge)](https://github.com/hyprwm/Hyprland)
+![Wayland](https://img.shields.io/badge/Display-Wayland-9b8afb?style=for-the-badge)
+![C++](https://img.shields.io/badge/C%2B%2B-26-58c4e8?style=for-the-badge)
+[![License](https://img.shields.io/badge/License-BSD--3--Clause-9b8afb?style=for-the-badge)](./LICENSE)
 
-It provides the latest Wayland features, is highly customizable, has all the eyecandy, the most powerful plugins,
-easy IPC, much more QoL stuff than other compositors and more...
-<br>
-<br>
-
----
-
-**[<kbd> <br> Install <br> </kbd>][Install]** 
-**[<kbd> <br> Quick Start <br> </kbd>][Quick Start]** 
-**[<kbd> <br> Configure <br> </kbd>][Configure]** 
-**[<kbd> <br> Contribute <br> </kbd>][Contribute]**
-
----
-
-<br>
+**[Fork features](#what-this-fork-adds) · [Build](#build-from-source) · [Configuration](#configuration) · [Gallery](#gallery) · [Upstream](https://github.com/hyprwm/Hyprland)**
 
 </div>
 
-# Features
+---
 
-- All of the eyecandy: gradient borders, many types of blur, animations, glow, shadows and much more
-- A lot of customization
-- 100% independent, no wlroots, no libweston, no kwin, no mutter.
-- Custom bezier and spring curves for the best animations
-- Powerful plugin support
-- Built-in plugin manager
-- Tearing support for better gaming performance
-- Easily expandable and readable codebase
-- Fast and active development
-- Not afraid to provide bleeding-edge features
-- Config reloaded instantly upon saving
-- Global keybinds passed to your apps of choice
-- Tiling/pseudotiling/floating/fullscreen windows
-- Special workspaces (scratchpads)
-- Window groups (tabbed mode)
-- Powerful window/monitor/layer rules
-- Socket-based IPC
-- Native IME and Input Panels Support
-- Fully dynamic workspaces
-- Extensive layout support
-    - Dwindle
-    - Scrolling
-    - Master
-    - Monocle
-    - Custom layout with Lua
-    - Custom layouts with plugins
-- Per Workspace Layouts
-- and much more...
+## Hyprland, with local changes
 
-<br>
-<br>
+EvilLand is a fork of **[Hyprland](https://github.com/hyprwm/Hyprland)**, the independent dynamic tiling Wayland compositor. It keeps Hyprland's desktop, rendering, plugins, and IPC, and adds optional controls for screen capture and window focus.
 
-<div align = center>
+This repository contains the compositor source and fork-specific changes. The executable remains **`Hyprland`**, configuration uses **`hyprland.lua`**, and **`hyprctl`** remains the control interface. For the official project and its releases, visit upstream Hyprland.
 
-# Gallery
+## What this fork adds
 
-<br>
+All three properties are opt-in and disabled by default.
 
-![Preview A]
+| Property                  | Behavior                                                                                                                                                                   | Reference                                              |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| `hide_from_screen_share`  | Excludes windows or layers from capture. For windows on the same workspace and monitor, input goes to the hidden window while the previous active window, IPC title, and focus history are kept. | [Capture and focus](./FOCUS_GUARD.md) |
+| `preserve_previous_focus` | Keeps the previous native Wayland client's keyboard focus notifications and activated state while delivering input to a private window. Requires `hide_from_screen_share`. | [Focus implementation](./src/managers/SeatManager.cpp) |
+| `focus_guard`             | Holds the active native Wayland window's focus and geometry, blocks workspace and monitor switches, and allows input to an eligible private floating window.               | [Usage and limitations](./FOCUS_GUARD.md)              |
 
-<br>
+Preserving client focus notifications and `focus_guard` require native Wayland clients. Keeping the previous active window in IPC is independent of the client backend. See the [focus guide](./FOCUS_GUARD.md) for supported interactions and limitations. Integration coverage lives in [hyprtester](./hyprtester/src/tests/clients/private-focus.cpp); capture rule coverage lives in [unit tests](./tests/desktop/rule/ScreenShare.cpp).
 
-![Preview B]
+## The Hyprland desktop
 
-<br>
+| Windows & workspaces                                   | Appearance & integration                                   |
+| ------------------------------------------------------ | ---------------------------------------------------------- |
+| Tiling, floating, pseudotiling, and fullscreen windows | Gradient borders, blur, shadows, and animations            |
+| Dwindle, Master, Scrolling, and Monocle layouts        | Custom bezier and spring animation curves                  |
+| Dynamic and special workspaces, window groups          | Configuration reloads when saved                           |
+| Window, monitor, and layer rules                       | Plugins and the built-in `hyprpm` manager                  |
+| Per-workspace layouts and custom layouts               | Socket-based IPC, global shortcuts, and native IME support |
 
-![Preview C]
+## Build from source
 
-<br>
-<br>
+Install the build dependencies described in the [Hyprland installation guide](https://wiki.hypr.land/getting-started/installation/). This checkout requires a compiler with **C++26** support; dependency requirements are defined in [CMakeLists.txt](./CMakeLists.txt).
 
-</div>
+```sh
+git clone --recurse-submodules https://github.com/hackerman111/EvilLand.git
+cd EvilLand
+cmake -S . -B build/evilland -DCMAKE_BUILD_TYPE=Release
+cmake --build build/evilland --parallel
+```
 
-# Special Thanks
+For an existing checkout, initialize dependencies with `git submodule update --init --recursive` before configuring. The compositor binary is `build/evilland/Hyprland`.
 
-<br>
+Fork-specific properties require this fork's binary. After installing a new build, restart the compositor session; reloading configuration only updates settings.
 
-**[wlroots]** - *For powering Hyprland in the past*
+## Configuration
 
-**[tinywl]** - *For showing how 2 do stuff*
+Start with the repository's [example Lua configuration](./example/hyprland.lua), the [Hyprland configuration wiki](https://wiki.hypr.land/configuring/), and the [getting started guide](https://wiki.hypr.land/getting-started/master-tutorial/).
 
-**[Sway]** - *For showing how 2 do stuff the overkill way*
+To exclude a floating terminal from compositor screen sharing:
 
-**[Vivarium]** - *For showing how 2 do stuff the simple way*
+```lua
+hl.window_rule({
+    name = "private-terminal",
+    match = { class = "^private-terminal$" },
+    float = true,
+    hide_from_screen_share = true,
+})
+```
 
-**[dwl]** - *For showing how 2 do stuff the hacky way*
+Launch it with `kitty --class private-terminal`. For focus controls and their interactions, read [FOCUS_GUARD.md](./FOCUS_GUARD.md).
 
-**[Wayfire]** - *For showing how 2 do some graphics stuff*
+</details>
 
+## Credits & license
 
-<!----------------------------------------------------------------------------->
+Hyprland is created by **vaxerski and the [Hyprland contributors](https://github.com/hyprwm/Hyprland/graphs/contributors)**. EvilLand builds on their work and retains the [BSD 3-Clause license](./LICENSE).
 
-[Configure]: https://wiki.hypr.land/configuring/
-[Stars]: https://starchart.cc/hyprwm/Hyprland
-[Hypr]: https://github.com/hyprwm/Hypr
+Upstream acknowledgements: [wlroots](https://gitlab.freedesktop.org/wlroots/wlroots), [tinywl](https://gitlab.freedesktop.org/wlroots/wlroots/-/blob/master/tinywl/tinywl.c), [Sway](https://github.com/swaywm/sway), [Vivarium](https://github.com/inclement/vivarium), [dwl](https://codeberg.org/dwl/dwl), and [Wayfire](https://github.com/WayfireWM/wayfire).
 
-[Pull Requests]: https://github.com/hyprwm/Hyprland/pulls
-[Issues]: https://github.com/hyprwm/Hyprland/issues
-[Todo]: https://github.com/hyprwm/Hyprland/projects?type=beta
-
-[Contribute]: https://wiki.hypr.land/contributing-and-debugging/
-[Install]: https://wiki.hypr.land/getting-started/installation/
-[Quick Start]: https://wiki.hypr.land/getting-started/master-tutorial/
-[Workflow]: https://github.com/hyprwm/Hyprland/actions/workflows/ci.yaml
-[License]: LICENSE
-
-
-<!----------------------------------{ Thanks }--------------------------------->
-
-[Vivarium]: https://github.com/inclement/vivarium
-[WlRoots]: https://gitlab.freedesktop.org/wlroots/wlroots
-[Wayfire]: https://github.com/WayfireWM/wayfire
-[TinyWl]: https://gitlab.freedesktop.org/wlroots/wlroots/-/blob/master/tinywl/tinywl.c
-[Sway]: https://github.com/swaywm/sway
-[DWL]: https://codeberg.org/dwl/dwl
-
-<!----------------------------------{ Images }--------------------------------->
-
-[Preview A]: ./assets/prev1.png
-[Preview B]: ./assets/prev2.png
-[Preview C]: ./assets/prev3.png
-
-
-<!----------------------------------{ Badges }--------------------------------->
-
-[Badge Workflow]: https://github.com/hyprwm/Hyprland/actions/workflows/ci.yaml/badge.svg
-
-[Badge Issues]: https://img.shields.io/github/issues/hyprwm/Hyprland
-[Badge Pull Requests]: https://img.shields.io/github/issues-pr/hyprwm/Hyprland
-[Badge Language]: https://img.shields.io/github/languages/top/hyprwm/Hyprland
-[Badge License]: https://img.shields.io/github/license/hyprwm/Hyprland
-[Badge Lines]: https://img.shields.io/tokei/lines/github/hyprwm/Hyprland
-[Badge Hi Mom]: https://img.shields.io/badge/Hi-mom!-ff69b4
+For upstream contributions, follow Hyprland's [AI policy](https://github.com/hyprwm/.github/blob/main/policies/AI_USAGE.md) and [issue guidelines](https://wiki.hypr.land/contributing-and-debugging/issue-guidelines/). Upstream GitHub interactions are the user's responsibility; violating these policies can result in an organization ban.
